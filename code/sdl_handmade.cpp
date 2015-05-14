@@ -29,6 +29,7 @@ struct WindowBuffer
 	int bytesPerPixel;
 };
 
+#define USE_TEXTURELOCK true
 struct WindowDimensions
 {
 	int width;
@@ -37,11 +38,39 @@ struct WindowDimensions
 
 global_variable WindowBuffer *buffer;
 
-#define USE_TEXTURELOCK true
+struct controllerState
+{
+	bool A;
+	bool B;
+	bool X;
+	bool Y;
+	bool START;
+	bool BACK;
+	bool UP;
+	bool DOWN;
+	bool LEFT;
+	bool RIGHT;
 
+	uint16 lstickX;
+	uint16 lstickY;
+};
+struct controller
+{
+	SDL_GameController *handle;
+	controllerState state;
+};
+#define MAX_CONTROLLERS 4 
+global_variable controller controllers[MAX_CONTROLLERS];
+global_variable controller keyboard;
 
-void handleEvent(SDL_Event*);
-void handleInput();
+internal void initControllers();
+internal void closeControllers();
+
+internal void handleEvent(SDL_Event*);
+internal void handleKey(SDL_Keycode, bool wasDown);
+
+internal void handleInput();
+
 internal void handleWindowResizeEvent(SDL_Event* event);
 internal void sdlResizeWindowTexture(WindowBuffer *buffer, SDL_Renderer *renderer, int width, int height);
 internal void sdlUpdateWindow(WindowBuffer *buffer, SDL_Renderer *renderer);
@@ -121,6 +150,36 @@ int main(int argc, char *argv[])
 	return(0);
 }
 
+void initControllers()
+{
+	// jIndex is the SDL controller index
+	int maxJoysticks = SDL_NumJoysticks();
+	int controllerIndex = 0;
+	for(int jIndex = 0; jIndex < maxJoysticks; jIndex++)
+	{
+		if (controllerIndex >= MAX_CONTROLLERS)
+		{
+			break;
+		}
+		if (SDL_IsGameController(jIndex))
+		{
+			controllers[controllerIndex].handle = SDL_GameControllerOpen(jIndex);
+			controllerIndex++;
+		}
+	}
+}
+
+void closeControllers()
+{
+	for( int cIndex = 0; cIndex < MAX_CONTROLLERS; cIndex++)
+	{
+		if (controllers[cIndex].handle != NULL)
+		{
+			SDL_GameControllerClose(controllers[cIndex].handle);
+		}
+	}
+}
+
 void handleEvent(SDL_Event *event)
 {
 	switch(event->type)
@@ -154,12 +213,116 @@ void handleEvent(SDL_Event *event)
 				} break;
 			}
 		}
+		case SDL_KEYDOWN:
+		case SDL_KEYUP:
+		{
+			SDL_Keycode keyCode = event->key.keysym.sym;
+			bool wasDown = event->key.state;
+			handleKey(keyCode, wasDown);
+		} break;
+
+		// Controllers added or changed
+		// SDL_CONTROLLERDEVICEADDED, SDL_CONTROLLERDEVICEREMOVED
+		// SDL_CONTROLLERDEVICEREMAPPED .which is joystic device index
 	}
 }
 
 void handleInput()
 {
+	// Get which buttons are down
+	SDL_GameController *pad = NULL;
+	for (int cIndex = 0;
+		cIndex < MAX_CONTROLLERS;
+		cIndex++)
+	{
+		
+		pad = controllers[cIndex].handle;
+		if (pad != NULL)
+		{
+			if (SDL_GameControllerGetAttached(pad));
+			{
+				controllers[cIndex].state.A = (SDL_GameControllerGetButton(pad, 
+					SDL_CONTROLLER_BUTTON_A) == 1);
+				controllers[cIndex].state.B = (SDL_GameControllerGetButton(pad, 
+					SDL_CONTROLLER_BUTTON_B) == 1);
+				controllers[cIndex].state.X = (SDL_GameControllerGetButton(pad, 
+					SDL_CONTROLLER_BUTTON_X) == 1);
+				controllers[cIndex].state.Y = (SDL_GameControllerGetButton(pad, 
+					SDL_CONTROLLER_BUTTON_A) == 1);
 
+				controllers[cIndex].state.START = (SDL_GameControllerGetButton(pad, 
+					SDL_CONTROLLER_BUTTON_START) == 1);
+				controllers[cIndex].state.BACK = (SDL_GameControllerGetButton(pad, 
+					SDL_CONTROLLER_BUTTON_BACK) == 1);
+				controllers[cIndex].state.UP = (SDL_GameControllerGetButton(pad, 
+					SDL_CONTROLLER_BUTTON_DPAD_UP) == 1);
+				controllers[cIndex].state.DOWN = (SDL_GameControllerGetButton(pad, 
+					SDL_CONTROLLER_BUTTON_DPAD_DOWN) == 1);
+				controllers[cIndex].state.LEFT = (SDL_GameControllerGetButton(pad, 
+					SDL_CONTROLLER_BUTTON_DPAD_LEFT) == 1);
+				controllers[cIndex].state.RIGHT = (SDL_GameControllerGetButton(pad, 
+					SDL_CONTROLLER_BUTTON_DPAD_RIGHT) == 1);
+
+				controllers[cindex].state.lstickX = SDL_GameControllerGetAxis(pad,
+				SDL_CONTROLLER_AXIS_LEFTX);
+				controllers[cindex].state.lstickY = SDL_GameControllerGetAxis(pad,
+				SDL_CONTROLLER_AXIS_LEFTY);
+			}
+		}
+	}
+
+	// Get directions 
+
+}
+
+void handleKey(SDL_Keycode keyCode, bool wasDown)
+{
+	bool down = !wasDown;
+	switch(keyCode)
+	{
+		case SDLK_UP:
+		{
+			keyboard.state.UP = down;
+		} break;
+		case SDLK_DOWN:
+		{
+			keyboard.state.DOWN = down;
+		} break;
+		case SDLK_LEFT:
+		{
+			keyboard.state.LEFT = down;
+		} break;
+		case SDLK_RIGHT:
+		{
+			keyboard.state.RIGHT = down;
+		} break;
+
+		case SDLK_a:
+		{
+			keyboard.state.A = down;
+		} break;
+		case SDLK_b:
+		{
+			keyboard.state.B = down;
+		} break;
+		case SDLK_x:
+		{
+			keyboard.state.X = down;
+		} break;
+		case SDLK_y:
+		{
+			keyboard.state.Y = down;
+		} break;
+
+		case SDLK_RETURN:
+		{
+			keyboard.state.START = down;
+		} break;
+		case SDLK_ESCAPE:
+		{
+			keyboard.state.BACK = down;
+		} break;
+	}
 }
 
 void handleWindowResizeEvent(SDL_Event* event)
