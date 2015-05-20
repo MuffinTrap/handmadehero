@@ -62,7 +62,10 @@ struct controller
 #define MAX_CONTROLLERS 4 
 global_variable controller controllers[MAX_CONTROLLERS];
 global_variable controller keyboard;
+global_variable SDL_AudioDeviceID audioDevice; 
 
+internal void initAudio(int bufferSizeSamples);
+internal void audioCallback(void *userData, uint8 *buffer, int length);
 internal void initControllers();
 internal void closeControllers();
 
@@ -80,7 +83,9 @@ SDL_Renderer* getRenderer(uint32 windowID);
 
 int main(int argc, char *argv[])
 {
-	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0)
+	if (SDL_Init(SDL_INIT_VIDEO | 
+		SDL_INIT_GAMECONTROLLER | 
+		SDL_INIT_AUDIO) != 0)
 	{
 		printf("SDL init failed\n");
 	}
@@ -110,6 +115,9 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
+	initControllers();
+	initAudio(65536);
+
 	running = true;
 	// Update window to create the texture
 			int windowWidth = 0;
@@ -128,7 +136,8 @@ int main(int argc, char *argv[])
 	sdlResizeWindowTexture(buffer, renderer, windowWidth, windowHeight);
 
 
-	uint32 xOffset = 0;
+	// not an offset but speed
+	uint32 xOffset = 1;
 	uint32 yOffset = 0;
 	while(running)
 	{
@@ -142,9 +151,9 @@ int main(int argc, char *argv[])
 		renderWeirdGradient(buffer, xOffset, yOffset);
 		sdlUpdateWindow(buffer, renderer);
 
-		xOffset++;
 
 	}
+	SDL_CloseAudio();
 	SDL_Quit();
 	delete buffer;
 	return(0);
@@ -178,6 +187,38 @@ void closeControllers()
 			SDL_GameControllerClose(controllers[cIndex].handle);
 		}
 	}
+}
+
+void initAudio(int bufferSizeSamples)
+{
+	SDL_AudioSpec requirements = {0};
+	SDL_AudioSpec obtained;
+	requirements.freq = 48000;
+	requirements.format = AUDIO_S16SYS;
+	requirements.channels = 2;
+	requirements.samples = bufferSizeSamples;
+	requirements.callback = &audioCallback;
+	// if callback is null, we must supply the data
+	// with SDL_QueueAudio(device, void *data, uint32 bytes);
+	int flags = 0; // what things are allowed to differ from required ones
+	audioDevice = SDL_OpenAudioDevice( NULL, // automatic
+		0,  // for playback
+		&requirements,
+		&obtained,
+		flags);
+
+	if (audioDevice == 0)
+	{
+		printf("Could not get suitable audio device.\n");
+	}
+		
+	
+}
+
+void audioCallback(void *userData, uint8 *buffer, int length)
+{
+	memset(buffer, 0, length);
+
 }
 
 void handleEvent(SDL_Event *event)
@@ -263,9 +304,9 @@ void handleInput()
 				controllers[cIndex].state.RIGHT = (SDL_GameControllerGetButton(pad, 
 					SDL_CONTROLLER_BUTTON_DPAD_RIGHT) == 1);
 
-				controllers[cindex].state.lstickX = SDL_GameControllerGetAxis(pad,
+				controllers[cIndex].state.lstickX = SDL_GameControllerGetAxis(pad,
 				SDL_CONTROLLER_AXIS_LEFTX);
-				controllers[cindex].state.lstickY = SDL_GameControllerGetAxis(pad,
+				controllers[cIndex].state.lstickY = SDL_GameControllerGetAxis(pad,
 				SDL_CONTROLLER_AXIS_LEFTY);
 			}
 		}
@@ -450,10 +491,41 @@ void renderWeirdGradient(WindowBuffer *buffer, int xOffset, int yOffset)
 
 		uint8 *row = (uint8 *)texturePixels;
 
+		uint8 blueValue = 0;
+		uint8 changePoint = 100;
+		int8 change = 1;
+		int newBlue = 0;
+		local_persist int startValue = 0;
+		startValue += xOffset;
+		uint8 blueStartValue = 0;
+
+		// 0 -> changePoint * 2
+		if (startValue < changePoint)
+		{
+			change = 1;
+			blueStartValue = startValue;
+		}
+		else if (startValue >= changePoint)
+		{
+			uint8 diff = startValue - changePoint;
+			blueStartValue = changePoint - diff;
+			change = -1;
+		}
+		if (startValue > changePoint * 2)
+		{
+			startValue = 0;
+			blueStartValue = startValue;
+			change = 1;
+		}
+		
+		// startValue is 0 - changePoint
+
 		for(int y = 0;
 			y < height;
 			++y)
 		{
+			blueValue = blueStartValue;
+
 			uint32* pixel = (uint32*)row;
 			for(int x = 0;
 				x < width;
@@ -467,11 +539,27 @@ void renderWeirdGradient(WindowBuffer *buffer, int xOffset, int yOffset)
 				*/
 				// Write each byte separately
 				// uint8 will wrap around automatically
-				uint8 blue = x+xOffset;
-				uint8 green = y+yOffset;
+				uint8 blue = blueValue;//+xOffset;
+				uint8 green = 0; //y;//+yOffset;
 
 				*pixel = (( green << 8) | blue);
 				pixel++;
+
+				newBlue = blueValue + change;
+				if (change > 0 && newBlue > changePoint)
+				{
+					blueValue = changePoint;
+					change = -1;
+				}
+				else if(change < 0 && newBlue <= 0)
+				{
+					blueValue = 0;
+					change = 1;
+				}
+				else
+				{
+					blueValue = newBlue;
+				}
 			}
 
 			// advance a row of bytes
