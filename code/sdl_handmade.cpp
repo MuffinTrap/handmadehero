@@ -1,40 +1,40 @@
-#include <SDL.h>
-#include <stdint.h>
-#include <sys/mman.h>
+	#include <SDL.h>
+	#include <stdint.h>
+	#include <sys/mman.h>
 
-typedef int8_t int8;
-typedef int16_t int16;
-typedef int32_t int32;
-typedef int64_t int64;
+	typedef int8_t int8;
+	typedef int16_t int16;
+	typedef int32_t int32;
+	typedef int64_t int64;
 
-typedef uint8_t uint8;
-typedef uint16_t uint16;
-typedef uint32_t uint32;
-typedef uint64_t uint64;
-// static functions are local to the file
-// so we call them internal
+	typedef uint8_t uint8;
+	typedef uint16_t uint16;
+	typedef uint32_t uint32;
+	typedef uint64_t uint64;
+	// static functions are local to the file
+	// so we call them internal
 
-#define internal static 
-#define global_variable static
-#define local_persist static
+	#define internal static 
+	#define global_variable static
+	#define local_persist static
 
-// static variables are initialized to 0
-global_variable bool running;
-struct WindowBuffer
-{
-	SDL_Texture *texture; 
-	void *bitmapMemory;
-	int bitmapWidth;
-	int bitmapHeight;
-	int bytesPerPixel;
-};
+	// static variables are initialized to 0
+	global_variable bool running;
+	struct WindowBuffer
+	{
+		SDL_Texture *texture; 
+		void *bitmapMemory;
+		int bitmapWidth;
+		int bitmapHeight;
+		int bytesPerPixel;
+	};
 
-#define USE_TEXTURELOCK true
-struct WindowDimensions
-{
-	int width;
-	int height;
-};
+	#define USE_TEXTURELOCK true
+	struct WindowDimensions
+	{
+		int width;
+		int height;
+	};
 
 global_variable WindowBuffer *buffer;
 
@@ -63,6 +63,22 @@ struct controller
 global_variable controller controllers[MAX_CONTROLLERS];
 global_variable controller keyboard;
 global_variable SDL_AudioDeviceID audioDevice; 
+
+struct audioConfig
+{
+	int samplesPerSecond;
+	int toneHz; // how many phases in second
+	int16 toneVolume;
+	uint32 runningSampleIndex;
+	// how long is one phase to get enough Hz in second
+	// -> how many samples for one phase
+	int squareWavePeriod;
+	int halfSquareWavePeriod;
+	int bytesPerSample;
+};
+
+global_variable audioConfig audioDefaults;
+global_variable bool soundIsPlaying;
 
 internal void initAudio(int bufferSizeSamples);
 internal void audioCallback(void *userData, uint8 *buffer, int length);
@@ -116,7 +132,9 @@ int main(int argc, char *argv[])
 	}
 
 	initControllers();
-	initAudio(65536);
+
+	soundIsPlaying = false;
+	initAudio(4096); // uint16 max value 65535
 
 	running = true;
 	// Update window to create the texture
@@ -211,14 +229,59 @@ void initAudio(int bufferSizeSamples)
 	{
 		printf("Could not get suitable audio device.\n");
 	}
+
 		
-	
+	audioDefaults.samplesPerSecond = obtained.freq;
+	audioDefaults.toneHz = 256; // how many phases in second
+	audioDefaults.toneVolume = 3000;
+	audioDefaults.runningSampleIndex = 0;
+	// how long is one phase to get enough Hz in second
+	// -> how many samples for one phase
+	audioDefaults.squareWavePeriod = audioDefaults.samplesPerSecond / audioDefaults.toneHz;
+	audioDefaults.halfSquareWavePeriod = audioDefaults.squareWavePeriod / 2;
+	audioDefaults.bytesPerSample = sizeof(int16) * 2; // left right
+	printf("Audiodefaults bytesPerSample is %d\n", audioDefaults.bytesPerSample);
+
+	if (!soundIsPlaying)
+	{
+		SDL_PauseAudioDevice(audioDevice, 0);
+		soundIsPlaying = true;
+	}
+
 }
 
-void audioCallback(void *userData, uint8 *buffer, int length)
+void audioCallback(void *userData, uint8 *buffer, int bytes)
 {
-	memset(buffer, 0, length);
+	printf("Audio callback for %d bytes\n", bytes);
+	int sampleCount = bytes / audioDefaults.bytesPerSample;
+	// bytes /  bytes / samples ->  bytes * samples / bytes -> samples
+	printf("SampleCount %d\n", sampleCount);
+	int16 sampleValue = 0;
+	int runningSampleIndex = audioDefaults.runningSampleIndex;
+	sampleValue = ((runningSampleIndex / audioDefaults.halfSquareWavePeriod) % 2 ) ? audioDefaults.toneVolume : -audioDefaults.toneVolume;
 
+	uint16* sampleOut = (uint16*)buffer;
+	printf("Starting point in buffer %p\n", buffer);
+	for( int sampleIndex = 0;
+		sampleIndex < sampleCount;
+		sampleIndex++)
+		{
+			*sampleOut = sampleValue;
+			*sampleOut++;
+
+			*sampleOut = sampleValue;
+			*sampleOut++;
+
+			
+			runningSampleIndex++;
+			if (runningSampleIndex > audioDefaults.squareWavePeriod)
+			{
+				runningSampleIndex = 0;
+			}
+			sampleValue = ((runningSampleIndex / audioDefaults.halfSquareWavePeriod) % 2 ) ? audioDefaults.toneVolume : -audioDefaults.toneVolume;
+		}
+
+	audioDefaults.runningSampleIndex = runningSampleIndex;
 }
 
 void handleEvent(SDL_Event *event)
