@@ -1,40 +1,42 @@
-	#include <SDL.h>
-	#include <stdint.h>
-	#include <sys/mman.h>
+#include <SDL.h>	
+#include <stdint.h>
+#include <sys/mman.h>
+#include <string.h> // memcpy
+#include <assert.h>
 
-	typedef int8_t int8;
-	typedef int16_t int16;
-	typedef int32_t int32;
-	typedef int64_t int64;
+typedef int8_t int8;
+typedef int16_t int16;
+typedef int32_t int32;
+typedef int64_t int64;
 
-	typedef uint8_t uint8;
-	typedef uint16_t uint16;
-	typedef uint32_t uint32;
-	typedef uint64_t uint64;
-	// static functions are local to the file
-	// so we call them internal
+typedef uint8_t uint8;
+typedef uint16_t uint16;
+typedef uint32_t uint32;
+typedef uint64_t uint64;
+// static functions are local to the file
+// so we call them internal
 
-	#define internal static 
-	#define global_variable static
-	#define local_persist static
+#define internal static 
+#define global_variable static
+#define local_persist static
 
-	// static variables are initialized to 0
-	global_variable bool running;
-	struct WindowBuffer
-	{
-		SDL_Texture *texture; 
-		void *bitmapMemory;
-		int bitmapWidth;
-		int bitmapHeight;
-		int bytesPerPixel;
-	};
+// static variables are initialized to 0
+global_variable bool running;
+struct WindowBuffer
+{
+	SDL_Texture *texture; 
+	void *bitmapMemory;
+	int bitmapWidth;
+	int bitmapHeight;
+	int bytesPerPixel;
+};
 
-	#define USE_TEXTURELOCK true
-	struct WindowDimensions
-	{
-		int width;
-		int height;
-	};
+#define USE_TEXTURELOCK true
+struct WindowDimensions
+{
+	int width;
+	int height;
+};
 
 global_variable WindowBuffer *buffer;
 
@@ -59,11 +61,12 @@ struct controller
 	SDL_GameController *handle;
 	controllerState state;
 };
-#define MAX_CONTROLLERS 4 
+static const uint MAX_CONTROLLERS = 4;
 global_variable controller controllers[MAX_CONTROLLERS];
 global_variable controller keyboard;
-global_variable SDL_AudioDeviceID audioDevice; 
 
+static const uint SDL_AUDIO_BUFFER_SIZE_BYTES = 2048;
+static const uint SDL_SAMPLES_PER_CALLBACK = 1024;
 struct audioConfig
 {
 	int samplesPerSecond;
@@ -75,13 +78,27 @@ struct audioConfig
 	int squareWavePeriod;
 	int halfSquareWavePeriod;
 	int bytesPerSample;
+	SDL_AudioDeviceID audioDevice; 
 };
 
+struct ringBufferInfo
+{
+	uint sizeBytes;
+	uint writeCursorBytes;
+	uint playCursorBytes;
+	void* data;
+	bool updateNeeded;
+};
+
+
 global_variable audioConfig audioDefaults;
+global_variable ringBufferInfo ringBuffer;
 global_variable bool soundIsPlaying;
 
-internal void initAudio(int bufferSizeSamples);
+internal void initAudio(int samplesPerSecond);
 internal void audioCallback(void *userData, uint8 *buffer, int length);
+internal void playSquareWave();
+internal void writeSquareWave(void* targetBuffer, int bytesToWrite);
 internal void initControllers();
 internal void closeControllers();
 
@@ -133,8 +150,7 @@ int main(int argc, char *argv[])
 
 	initControllers();
 
-	soundIsPlaying = false;
-	initAudio(4096); // uint16 max value 65535
+	
 
 	running = true;
 	// Update window to create the texture
@@ -157,6 +173,8 @@ int main(int argc, char *argv[])
 	// not an offset but speed
 	uint32 xOffset = 1;
 	uint32 yOffset = 0;
+	soundIsPlaying = false;
+	initAudio(48000);
 	while(running)
 	{
 		SDL_Event event;
@@ -167,9 +185,8 @@ int main(int argc, char *argv[])
 
 		handleInput();
 		renderWeirdGradient(buffer, xOffset, yOffset);
+		playSquareWave();
 		sdlUpdateWindow(buffer, renderer);
-
-
 	}
 	SDL_CloseAudio();
 	SDL_Quit();
@@ -207,27 +224,35 @@ void closeControllers()
 	}
 }
 
-void initAudio(int bufferSizeSamples)
+void initAudio(int32 samplesPerSecond)
 {
 	SDL_AudioSpec requirements = {0};
 	SDL_AudioSpec obtained;
-	requirements.freq = 48000;
-	requirements.format = AUDIO_S16SYS;
+	requirements.freq = samplesPerSecond;
+	requirements.format = AUDIO_S16LSB;
 	requirements.channels = 2;
-	requirements.samples = bufferSizeSamples;
+	requirements.samples = SDL_SAMPLES_PER_CALLBACK;
 	requirements.callback = &audioCallback;
+	requirements.userdata = &ringBuffer;
 	// if callback is null, we must supply the data
 	// with SDL_QueueAudio(device, void *data, uint32 bytes);
 	int flags = 0; // what things are allowed to differ from required ones
-	audioDevice = SDL_OpenAudioDevice( NULL, // automatic
+	audioDefaults.audioDevice = SDL_OpenAudioDevice( NULL, // automatic
 		0,  // for playback
 		&requirements,
 		&obtained,
 		flags);
 
-	if (audioDevice == 0)
+	if (audioDefaults.audioDevice == 0 || obtained.format != AUDIO_S16LSB)
 	{
 		printf("Could not get suitable audio device.\n");
+		SDL_CloseAudio();
+		return;
+	}
+	else
+	{
+		printf("Got audio device: freq: %d, channels: %d, buffer size %d\n", 
+					 obtained.freq, obtained.channels, obtained.samples);
 	}
 
 		
@@ -241,44 +266,129 @@ void initAudio(int bufferSizeSamples)
 	audioDefaults.halfSquareWavePeriod = audioDefaults.squareWavePeriod / 2;
 	audioDefaults.bytesPerSample = sizeof(int16) * 2; // left right
 	printf("Audiodefaults bytesPerSample is %d\n", audioDefaults.bytesPerSample);
+	
+	// Create a ring buffer with one second of audio
+	ringBuffer.sizeBytes = audioDefaults.samplesPerSecond * audioDefaults.bytesPerSample;
+	ringBuffer.data = malloc(ringBuffer.sizeBytes);
+	if (ringBuffer.data != NULL)
+	{
+		printf("Reserved a ring buffer of %d bytes\n", ringBuffer.sizeBytes);
+	}
+	ringBuffer.playCursorBytes = 0;
+	ringBuffer.writeCursorBytes = 0;
+	ringBuffer.updateNeeded = true;
 
+	playSquareWave(); // Fill the ring buffer
 	if (!soundIsPlaying)
 	{
-		SDL_PauseAudioDevice(audioDevice, 0);
+		// start the callbacks
+		SDL_PauseAudioDevice(audioDefaults.audioDevice, 0);
 		soundIsPlaying = true;
 	}
-
 }
 
+// copies from ring buffer to SDL buffer
 void audioCallback(void *userData, uint8 *buffer, int bytes)
 {
-	printf("Audio callback for %d bytes\n", bytes);
-	int sampleCount = bytes / audioDefaults.bytesPerSample;
+	
+	ringBufferInfo* ringInfo = (ringBufferInfo*)userData;
+	printf("Audio call back. Playcursor at %d\n", ringInfo->playCursorBytes);
+	uint regionSize1bytes = bytes;
+	uint regionSize2bytes = 0;
+	if (ringInfo->playCursorBytes + bytes > ringInfo->sizeBytes)
+	{
+			regionSize1bytes = ringInfo->sizeBytes - ringInfo->playCursorBytes;
+			regionSize2bytes = bytes - regionSize1bytes;
+	}
+	memcpy(buffer, (uint8*)(ringInfo->data) + ringInfo->playCursorBytes, regionSize1bytes); // to, from, amount
+	memcpy(&buffer[regionSize1bytes], ringInfo->data, regionSize2bytes);
+	
+	ringInfo->playCursorBytes = (ringInfo->playCursorBytes + bytes) % ringInfo->sizeBytes;
+	ringInfo->writeCursorBytes = (ringInfo->playCursorBytes + SDL_AUDIO_BUFFER_SIZE_BYTES) % ringInfo->sizeBytes;
+	ringInfo->updateNeeded = true;
+}
+
+
+// writes square wave to ring buffer
+void playSquareWave()
+{
+
+	
+	if (ringBuffer.updateNeeded)
+	{
+		ringBuffer.updateNeeded = false;
+		// Lock audio device while we are writing to the ring buffer
+		SDL_LockAudioDevice(audioDefaults.audioDevice);
+		
+		// We don't actually use the writeCursorBytes to anything, we want 
+		// the part of the buffer where left with runningSampleIndex
+		
+		
+		int wantedWriteByte = audioDefaults.runningSampleIndex * audioDefaults.bytesPerSample 
+			% ringBuffer.sizeBytes;
+		int bytesToWrite = 0;
+		assert(wantedWriteByte < ringBuffer.sizeBytes);
+
+		if (ringBuffer.playCursorBytes == wantedWriteByte)
+		{
+			bytesToWrite = ringBuffer.sizeBytes;
+		}
+		else if (wantedWriteByte > ringBuffer.playCursorBytes)
+		{
+			bytesToWrite = ringBuffer.sizeBytes - wantedWriteByte;
+			bytesToWrite += ringBuffer.playCursorBytes;
+		}
+		else // write < play
+		{
+			bytesToWrite = ringBuffer.playCursorBytes - wantedWriteByte;
+		}
+		void* region1start = (uint8*)ringBuffer.data + wantedWriteByte;
+		int region1sizeBytes = bytesToWrite;
+		if (wantedWriteByte + region1sizeBytes > ringBuffer.sizeBytes)
+		{
+			region1sizeBytes = ringBuffer.sizeBytes - wantedWriteByte;
+		}
+		void* region2start = ringBuffer.data;
+		int region2sizeBytes = bytesToWrite - region1sizeBytes;
+		
+		SDL_UnlockAudioDevice(audioDefaults.audioDevice);
+		
+		writeSquareWave(region1start, region1sizeBytes);
+		if (region2sizeBytes > 0)
+		{
+			writeSquareWave(region2start, region2sizeBytes);
+		}
+		
+		printf("playSquareWave writing to %d region1 %d region2 %d\n", wantedWriteByte, region1sizeBytes, region2sizeBytes);
+	}
+}
+
+
+// writes square wave to any buffer
+void writeSquareWave(void* targetBuffer, int bytesToWrite)
+{
+	printf("writeSquareWave writing %d bytes\n", bytesToWrite);
+	int sampleCount = bytesToWrite / audioDefaults.bytesPerSample;
 	// bytes /  bytes / samples ->  bytes * samples / bytes -> samples
-	printf("SampleCount %d\n", sampleCount);
+	
+	int16* sampleOut = (int16*)targetBuffer;
 	int16 sampleValue = 0;
 	int runningSampleIndex = audioDefaults.runningSampleIndex;
-	sampleValue = ((runningSampleIndex / audioDefaults.halfSquareWavePeriod) % 2 ) ? audioDefaults.toneVolume : -audioDefaults.toneVolume;
-
-	uint16* sampleOut = (uint16*)buffer;
-	printf("Starting point in buffer %p\n", buffer);
+	
 	for( int sampleIndex = 0;
 		sampleIndex < sampleCount;
 		sampleIndex++)
 		{
+			sampleValue = ((runningSampleIndex / audioDefaults.halfSquareWavePeriod) % 2 ) ? 
+				audioDefaults.toneVolume : -audioDefaults.toneVolume;
+				
 			*sampleOut = sampleValue;
 			*sampleOut++;
 
 			*sampleOut = sampleValue;
 			*sampleOut++;
-
 			
 			runningSampleIndex++;
-			if (runningSampleIndex > audioDefaults.squareWavePeriod)
-			{
-				runningSampleIndex = 0;
-			}
-			sampleValue = ((runningSampleIndex / audioDefaults.halfSquareWavePeriod) % 2 ) ? audioDefaults.toneVolume : -audioDefaults.toneVolume;
 		}
 
 	audioDefaults.runningSampleIndex = runningSampleIndex;
