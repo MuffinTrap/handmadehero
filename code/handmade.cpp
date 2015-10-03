@@ -1,20 +1,95 @@
 /* Cross platform code */
 #include "handmade.h"
 
-void gameUpdateAndRender(game_offscreen_buffer* buffer, int32 xOffset, int32 yOffset)
+global_variable game_audioConfig audioConfig;
+
+void gameUpdateAndRender(game_pixel_buffer* pixelBuffer, int32 xOffset, int32 yOffset
+, game_sound_buffer* soundBuffer)
 {
-	renderWeirdGradient(buffer, xOffset, yOffset);
+
+	// TODO(tia): Now just asks continuous samples
+	// Allow sample offsets here for more robust platform options
+	gameOutputSound(soundBuffer);
+	//renderWeirdGradient(pixelBuffer, xOffset, yOffset);
 }
 
+void gameUpdateAndRender_dualBuffer(game_pixel_buffer* pixelBuffer, int32 xOffset, int32 yOffset
+, dualBuffer* soundBuffer)
+{
 
-void renderWeirdGradient(game_offscreen_buffer *buffer, int32 xOffset, int32 yOffset)
+	// TODO(tia): Now just asks continuous samples
+	// Allow sample offsets here for more robust platform options
+	gameOutputSound_dualBuffer(soundBuffer);
+	renderWeirdGradient(pixelBuffer, xOffset, yOffset);
+}
+void gameOutputSound(game_sound_buffer* buffer)
+{
+	if (buffer->samplesToWrite > 0)
+	{
+		writeSineWave(buffer->samples, buffer->samplesToWrite);
+	}
+}
+
+void gameOutputSound_dualBuffer(dualBuffer* buffer)
+{
+	if (buffer->region1Samples > 0)
+	{
+		writeSineWave(buffer->region1Start, buffer->region1Samples);
+
+	}
+	if (buffer->region2Samples > 0)
+	{
+		writeSineWave(buffer->region2Start, buffer->region2Samples);
+
+	}
+}
+void writeSineWave(void* samples, uint32 samplesToWrite)
+{
+	printf("writeSineWave writing %d bytes\n", samplesToWrite * audioConfig.bytesPerSample);
+	uint32 sampleCount = samplesToWrite;
+	
+	int16* sampleOut = (int16*)samples;
+	real32 sampleValue = 0.0f;
+	int32 runningSampleIndex = audioConfig.runningSampleIndex;
+	
+	for (uint32 sampleIndex = 0;
+			sampleIndex < sampleCount;
+			sampleIndex++)
+			{
+				// t should be between [0, 2PI]
+				// clamp runningSampleIndex between 0 and samplesPerWavePeriod
+				// int clampedRunningSampleIndex = runningSampleIndex % audioConfig.samplesPerWavePeriod;
+				// clamp t between [0.0f, 1.0f]
+				
+				//real32 t = (real32)runningSampleIndex / (real32)audioConfig.samplesPerWavePeriod;
+				// sin works with multiples of 2PI, the number does not matter otherwise.
+				// t *= 2.0f * PI32;
+				// sinf() returns[ -1.0f, 1.0f]
+				real32 sineValue = sinf(audioConfig.tForSine);
+				
+				sampleValue = (int16)(sineValue * audioConfig.toneVolume);
+				*sampleOut = sampleValue;
+				sampleOut++;
+				*sampleOut = sampleValue;
+				sampleOut++;
+				
+				runningSampleIndex++;
+				// Advance t for sine by one sample
+				audioConfig.tForSine += (audioConfig.sineWavePeriod) / (real32)(audioConfig.samplesPerWavePeriod);
+			}
+		
+	audioConfig.runningSampleIndex = runningSampleIndex;
+
+}
+
+void renderWeirdGradient(game_pixel_buffer *pixelBuffer, int32 xOffset, int32 yOffset)
 {
 
 	// Modify the pixels
-		void *texturePixels = buffer->texturePixels;
-		int32 texturePitch = buffer->texturePitch;
-		int32 width = buffer->bitmapWidth;
-		int32 height = buffer->bitmapHeight;
+		void *texturePixels = pixelBuffer->texturePixels;
+		int32 texturePitch = pixelBuffer->texturePitch;
+		int32 width = pixelBuffer->bitmapWidth;
+		int32 height = pixelBuffer->bitmapHeight;
 
 		if (texturePixels == NULL)
 		{
