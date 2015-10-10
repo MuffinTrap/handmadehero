@@ -42,20 +42,57 @@ struct game_sound_buffer
 	uint32 samplesToWrite;
 };
 
-internal void 
-gameUpdateAndRender(game_pixel_buffer* pixelBuffer, int32 xOffset, int32 yOffset
-, game_sound_buffer* soundBuffer);
+// INPUT
+struct game_button_state
+{
+	int32 halfTransitions;
+	bool32 endedDown;
+};
+
+// Normalized axis values
+struct game_axis_state
+{
+	real32 start;
+	real32 min;
+	real32 max;
+	real32 end;
+};
+
+struct game_controller_state
+{
+	bool32 isAnalog;
+	union
+	{
+		game_button_state buttons[6];
+		struct
+		{
+			game_button_state up;
+			game_button_state down;
+			game_button_state left;
+			game_button_state right;
+			game_button_state leftShoulder;
+			game_button_state rightShoulder;
+		};
+	};
+
+	game_axis_state xAxis;
+	game_axis_state yAxis;
+};
+
+struct game_input_state
+{
+	game_controller_state controllers[4];
+};
 
 internal void 
-gameUpdateAndRender_dualBuffer(game_pixel_buffer* pixelBuffer, int32 xOffset, int32 yOffset
-, dualBuffer* soundBuffer);
+gameUpdateAndRender(game_pixel_buffer* pixelBuffer, game_sound_buffer* soundBuffer, game_input_state inputState);
+
 
 internal void 
 gameOutputSound(game_sound_buffer* buffer);
-internal void 
-gameOutputSound_dualBuffer(dualBuffer* buffer);
 
-internal void writeSineWave(void* samples, uint32 sampleCountToWrite);
+internal void 
+writeSineWave(void* samples, uint32 sampleCountToWrite);
 
 internal void 
 renderWeirdGradient(game_pixel_buffer* buffer, int32 xOffset, int32 yOffset);
