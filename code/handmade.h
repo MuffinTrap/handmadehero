@@ -3,6 +3,43 @@
 #ifndef HANDMADE_H
 #define HANDMADE_H
 
+// Macros
+#define bitsPerKilo 1024LL
+#define SizeKiloBytes(value) ((value) * bitsPerKilo)
+#define SizeMegaBytes(value) (SizeKiloBytes(value) * bitsPerKilo) 
+#define SizeGigaBytes(value) (SizeMegaBytes(value) * bitsPerKilo)
+#define SizeTeraBytes(value) (SizeGigaBytes(value) * bitsPerKilo)
+
+// HANDMADE_INTERNAL: 0 for public release, 1 for internal build 
+// HANDMADE_SLOW: 0 no slow code, 1 debug code and asserts
+// custom assert, tries to write to memory address zero when condition
+// is not true
+// __LINE__ and __FILE__ are supported by C standard.
+#if HANDMADE_SLOW
+	#define hm_assert(expression) \
+	if (!(expression)) {\
+	printf("Assert on (" #expression ") at %s line %d\n", __FILE__, __LINE__);\
+	{*(int *)0 = 0;} }
+#else
+	#define hm_assert(expression)
+#endif
+
+// All of the memory used by the game
+struct game_memory
+{
+	bool32 isInitialized;
+	uint64 permanentStorageSize;
+	void* permanentStoragePointer; // Required to be all zeros at startup
+	uint64 transientStorageSize;
+	void* transientStoragePointer; // Required to be all zeros at startup
+};
+
+struct game_state
+{
+	int32 toneHz;
+	int32 xOffset;
+	int32 yOffset;
+};
 /*
 	Services that the game provides to the platform layer
 	Timing
@@ -41,6 +78,7 @@ struct game_sound_buffer
 	void* samples;
 	uint32 samplesToWrite;
 };
+
 
 // INPUT
 struct game_button_state
@@ -81,11 +119,13 @@ struct game_controller_state
 
 struct game_input_state
 {
+	// TODO What do we want to pass?
+	real32 secondsElapsed;
 	game_controller_state controllers[4];
 };
 
 internal void 
-gameUpdateAndRender(game_pixel_buffer* pixelBuffer, game_sound_buffer* soundBuffer, game_input_state inputState);
+gameUpdateAndRender(game_pixel_buffer* pixelBuffer, game_sound_buffer* soundBuffer, game_input_state* inputState, game_state* gameState);
 
 
 internal void 

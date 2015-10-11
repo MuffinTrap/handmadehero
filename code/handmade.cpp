@@ -3,11 +3,11 @@
 
 global_variable game_audioConfig audioConfig;
 
-void gameUpdateAndRender(game_pixel_buffer* pixelBuffer, game_sound_buffer* soundBuffer, game_input_state* inputState)
+void gameUpdateAndRender(game_pixel_buffer* pixelBuffer, game_sound_buffer* soundBuffer, game_input_state* inputState, game_state* gameState)
 {
 
-	local_persist int32 xOffset = 0;
-	local_persist int32 yOffset = 0;
+	int32& xOffset = gameState->xOffset;
+	int32& yOffset = gameState->yOffset;
 
 	game_controller_state& input0 = inputState->controllers[0];
 	if (input0.isAnalog)
