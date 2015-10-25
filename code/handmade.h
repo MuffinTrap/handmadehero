@@ -24,6 +24,33 @@
 	#define hm_assert(expression)
 #endif
 
+// Services that the platform layer provides to the game
+
+#if HANDMADE_INTERNAL
+// IMPORTANT
+// These are not for doing anything in the shipped game.
+// They are locking and the write does not protext against lost data!
+// 
+struct debug_read_file_result
+{
+	void* memoryPointer;
+	uint32 sizeBytes;
+};
+
+internal debug_read_file_result debugPlatformReadEntireFile(const char* filename);
+internal void debugPlatformFreeFileMemory(void* bitmapMemory);
+internal bool32 debugPlatformWriteEntireFile(const char* filename, uint32 memorySize, void* memory);
+#endif
+
+internal uint32 
+safeTruncateUint64(uint64 value)
+{
+	hm_assert(value <= UINT32_MAX)
+	uint32 result = (uint32)value;
+	return result;
+}
+
+
 // All of the memory used by the game
 struct game_memory
 {
@@ -50,6 +77,7 @@ struct game_state
 
 struct game_pixel_buffer
 {
+	// NOTE: Pixels are always 32-bits wide, Memory order BB GG RR XX
 	void* texturePixels;
 	int32 texturePitch;
 	int32 bitmapWidth;

@@ -157,9 +157,15 @@ internal void writeSoundBuffer(game_sound_buffer& gameInputBuffer, dualBuffer& r
 internal void handleEvent(SDL_Event*);
 internal void handleKey(SDL_Keycode, bool wasDown);
 
+// ** FILE I/O
+// declared in handmade.h
+#include <sys/types.h> // for fstat()
+#include <sys/stat.h>  // for fstat()
+#include <unistd.h>    // for fstat() and close()
+#include <fcntl.h>		 // for fstat() and open()
 // ** Game API
 
-internal void updateGame(WindowBuffer* windowBuffer, game_input_state& inputState);
+internal void updateGame(WindowBuffer* windowBuffer, game_input_state& inputState, game_memory& gameMemory);
 
 // ** SDL CODE
 
@@ -234,6 +240,30 @@ int main(int argc, char *argv[])
 	game_input_state input2 = {};
 	game_input_state* pOldInput = &input1;
 	game_input_state* pNewInput = &input2;
+
+#if HANDMADE_INTERNAL 
+	void* baseAddress = (void*)SizeTeraBytes(2);
+#else
+	void* baseAddress = (void*)0;	
+#endif
+	game_memory gameMemory = {};
+	gameMemory.permanentStorageSize = SizeMegaBytes(64);
+	gameMemory.transientStorageSize = SizeGigaBytes(4);
+	uint64 totalMemorySize = gameMemory.permanentStorageSize + gameMemory.transientStorageSize;
+	gameMemory.permanentStoragePointer = mmap( baseAddress,  // place for memory
+		totalMemorySize, // how many bytes
+		PROT_READ | PROT_WRITE, // Protection flags to read/write
+		MAP_ANONYMOUS | MAP_PRIVATE, // not a file, only for us
+		-1, 						// no file
+		0); 				// offset into the file
+
+	gameMemory.transientStoragePointer = (uint8*)(gameMemory.permanentStoragePointer) + gameMemory.permanentStorageSize;
+
+	if (gameMemory.permanentStoragePointer == MAP_FAILED)
+	{
+		printf("Could not allocate memory for game.\n");
+		return 1;
+	}
 	
 	while(running)
 	{
@@ -247,7 +277,7 @@ int main(int argc, char *argv[])
 		game_input_state& newInput = *pNewInput;
 
 		handleInput(oldInput, newInput);
-		updateGame(gWindowBuffer, newInput);
+		updateGame(gWindowBuffer, newInput, gameMemory);
 		sdlUpdateWindow(gWindowBuffer, renderer);
 		
 		uint64 endCounter = SDL_GetPerformanceCounter();
@@ -278,6 +308,7 @@ int main(int argc, char *argv[])
 	delete gWindowBuffer;
 	free(ringBuffer.data);
 	free(gameInputSoundData);
+	munmap(gameMemory.permanentStoragePointer, gameMemory.permanentStorageSize);
 	return(0);
 }
 
@@ -817,13 +848,36 @@ void sdlResizeWindowTexture(WindowBuffer *buffer, SDL_Renderer *renderer, int32 
 		MAP_ANONYMOUS | MAP_PRIVATE, // not a file, only for us
 		-1, 						// no file
 		0); 				// offset into the file
+
+	if (buffer->bitmapMemory == MAP_FAILED)
+	{
+		printf("Could not map memory for bitmap buffer\n");
+	}
 	#endif
 
 }
 
 
-void updateGame(WindowBuffer* windowBuffer, game_input_state& inputState)
+void updateGame(WindowBuffer* windowBuffer, game_input_state& inputState, game_memory& gameMemory)
 {
+	hm_assert(sizeof(game_state) <= gameMemory.permanentStorageSize);
+	game_state* gameState = (game_state*)gameMemory.permanentStoragePointer;
+	if (!gameMemory.isInitialized)
+	{
+
+		const char* fileName = __FILE__;
+
+		struct debug_read_file_result readResult = debugPlatformReadEntireFile(fileName);
+		if (readResult.memoryPointer)
+		{
+			debugPlatformWriteEntireFile("../data/test.out", readResult.sizeBytes,readResult.memoryPointer);
+			debugPlatformFreeFileMemory(readResult.memoryPointer);
+		}
+
+		gameState->toneHz = 256;
+		gameMemory.isInitialized = true;
+	}
+
 	
 	dualBuffer preparedBuffer = prepareSoundBuffer();
 	game_sound_buffer gameSoundBuffer = {};
@@ -840,7 +894,7 @@ void updateGame(WindowBuffer* windowBuffer, game_input_state& inputState)
 	game_pixel_buffer gamePixelBuffer = preparePixelBuffer(windowBuffer);
 
 	// Game modifies the given buffers
-	gameUpdateAndRender(&gamePixelBuffer, &gameSoundBuffer, &inputState);
+	gameUpdateAndRender(&gamePixelBuffer, &gameSoundBuffer, &inputState, gameState);
 
 	writeSoundBuffer(gameSoundBuffer, preparedBuffer);
 	renderPixelBuffer(windowBuffer);
@@ -944,3 +998,101 @@ SDL_Renderer* getRenderer(uint32 windowID)
 	}
 	return NULL;
 }
+
+#if HANDMADE_INTERNAL
+
+internal debug_read_file_result
+debugPlatformReadEntireFile(const char* filename)
+{
+	struct debug_read_file_result result = {};
+	//when reading binary file, use O_BINARY
+	int fileDescriptor = open(filename, O_RDONLY);
+	if (fileDescriptor == -1)
+	{
+		return result;
+	}
+
+	struct stat fileStatus;
+	int statusResult = fstat(fileDescriptor, &fileStatus);
+	if (statusResult == -1)
+	{
+		close(fileDescriptor);
+		return result;
+	}
+	// st_size if of type off_t which is 64 bit on 64 bit machine
+	uint32 sizeBytes = safeTruncateUint64(fileStatus.st_size);
+
+	// Allocate memory for file contents
+	void* fileContentsBuffer = malloc(sizeBytes);
+	if (fileContentsBuffer == NULL)
+	{
+		close(fileDescriptor);
+		return result;
+	}
+
+	// Read until all data is read or error occurs
+	uint32 bytesLeftToRead = sizeBytes;
+	uint8* nextBytePointer = (uint8*)fileContentsBuffer;
+	while (bytesLeftToRead)
+	{
+		uint32 bytesRead = read(fileDescriptor, nextBytePointer, bytesLeftToRead);
+		if (bytesRead == -1)
+		{
+			debugPlatformFreeFileMemory(fileContentsBuffer);
+			close(fileDescriptor);
+			return result;
+		}
+
+		bytesLeftToRead -= bytesRead;
+		nextBytePointer += bytesRead;
+	}
+
+	close(fileDescriptor);
+
+	result.memoryPointer = fileContentsBuffer;
+	result.sizeBytes = sizeBytes;
+	return result;
+}
+
+internal void debugPlatformFreeFileMemory(void* memory)
+{
+	if (memory != NULL)
+	{
+		free(memory);
+		memory = NULL;
+	}
+}
+internal bool32 debugPlatformWriteEntireFile(const char* filename, uint32 memorySize, void* memory)
+{
+	// open for writing and create if does not exist
+	// permissions to use when created.
+	// Read permission for User
+	// Write permission for User
+	// Group and others have read permission
+	int fileDescriptor = open(filename
+		, O_WRONLY | O_CREAT
+		, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+
+	if (fileDescriptor == -1)
+	{
+		return false;
+	}
+
+	uint32 bytesToWrite = memorySize;
+	uint8* nextByteLocation = (uint8*)memory;
+	while (bytesToWrite)
+	{
+		uint32 bytesWritten = write(fileDescriptor, nextByteLocation, bytesToWrite);
+		if (bytesWritten == -1)
+		{
+			close(fileDescriptor);
+			return false;
+		}
+		bytesToWrite -= bytesWritten;
+		nextByteLocation += bytesWritten;
+	}
+
+	close(fileDescriptor);
+	return true;
+}
+#endif
