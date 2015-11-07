@@ -6,15 +6,18 @@ global_variable game_audioConfig audioConfig;
 void gameUpdateAndRender(game_pixel_buffer* pixelBuffer, game_sound_buffer* soundBuffer, game_input_state* inputState, game_state* gameState)
 {
 
+	// Check controller validity
+	hm_assert( &inputState->controllers[0].terminator - &inputState->controllers[0].buttons[0] == ArrayCount(inputState->controllers[0].buttons))
+
 	int32& xOffset = gameState->xOffset;
 	int32& yOffset = gameState->yOffset;
 
-	game_controller_state& input0 = inputState->controllers[0];
+	game_controller_state& input0 = inputState->keyboard;
 	if (input0.isAnalog)
 	{
 		// TODO(Tia) analog input movement
-		xOffset += (int)4.0f*(input0.xAxis.end);
-		yOffset += (int)4.0f*(input0.yAxis.end);
+		xOffset += (int)4.0f*(input0.xAxis.average);
+		yOffset += (int)4.0f*(input0.yAxis.average);
 
 	}
 	else

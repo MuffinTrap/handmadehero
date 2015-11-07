@@ -24,6 +24,7 @@
 	#define hm_assert(expression)
 #endif
 
+#define ArrayCount(array) (sizeof(array)/sizeof(array[0]))
 // Services that the platform layer provides to the game
 
 #if HANDMADE_INTERNAL
@@ -35,6 +36,12 @@ struct debug_read_file_result
 {
 	void* memoryPointer;
 	uint32 sizeBytes;
+
+	debug_read_file_result()
+	{
+		memoryPointer = NULL;
+		sizeBytes = 0;
+	}
 };
 
 internal debug_read_file_result debugPlatformReadEntireFile(const char* filename);
@@ -59,6 +66,15 @@ struct game_memory
 	void* permanentStoragePointer; // Required to be all zeros at startup
 	uint64 transientStorageSize;
 	void* transientStoragePointer; // Required to be all zeros at startup
+
+	game_memory()
+	{
+		isInitialized = false;
+		permanentStorageSize = 0;
+		permanentStoragePointer = NULL;
+		transientStorageSize = 0;
+		transientStoragePointer = NULL;
+	}
 };
 
 struct game_state
@@ -82,6 +98,14 @@ struct game_pixel_buffer
 	int32 texturePitch;
 	int32 bitmapWidth;
 	int32 bitmapHeight;
+
+	game_pixel_buffer()
+	{
+		texturePixels = NULL;
+		texturePitch = 0;
+		bitmapWidth = 0;
+		bitmapHeight = 0;
+	}
 };
 
 struct game_audioConfig
@@ -105,6 +129,12 @@ struct game_sound_buffer
 {
 	void* samples;
 	uint32 samplesToWrite;
+
+	game_sound_buffer()
+	{
+		samples = NULL;
+		samplesToWrite = 0;
+	}
 };
 
 
@@ -118,31 +148,53 @@ struct game_button_state
 // Normalized axis values
 struct game_axis_state
 {
-	real32 start;
-	real32 min;
-	real32 max;
-	real32 end;
+	real32 average;
+
+	game_axis_state()
+	{
+		average = 0.0f;
+	}
 };
 
 struct game_controller_state
 {
+	bool32 isConnected;
 	bool32 isAnalog;
 	union
 	{
-		game_button_state buttons[6];
+		game_button_state buttons[12];
 		struct
 		{
-			game_button_state up;
-			game_button_state down;
-			game_button_state left;
-			game_button_state right;
+			game_button_state moveUp;
+			game_button_state moveDown;
+			game_button_state moveLeft;
+			game_button_state moveRight;
+
+			game_button_state actionUp;
+			game_button_state actionDown;
+			game_button_state actionLeft;
+			game_button_state actionRight;
+
 			game_button_state leftShoulder;
 			game_button_state rightShoulder;
+
+			game_button_state start;
+			game_button_state back;
+
+			// 
+			game_button_state terminator;
 		};
+
 	};
 
 	game_axis_state xAxis;
 	game_axis_state yAxis;
+
+	game_controller_state()
+	{
+		isConnected = false;
+		isAnalog = false;
+	}
 };
 
 struct game_input_state
@@ -150,6 +202,12 @@ struct game_input_state
 	// TODO What do we want to pass?
 	real32 secondsElapsed;
 	game_controller_state controllers[4];
+	game_controller_state keyboard;
+
+	game_input_state()
+	{
+		secondsElapsed = 0;
+	}
 };
 
 internal void 

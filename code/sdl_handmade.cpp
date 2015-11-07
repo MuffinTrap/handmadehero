@@ -107,6 +107,7 @@ global_variable controller controllers[MAX_CONTROLLERS];
 global_variable controller keyboard;
 static const int16 CONTROLLER_AXIS_MAX_VALUE = 32767;
 static const int16 CONTROLLER_AXIS_MIN_VALUE = -32768;
+static const real32 CONTROLLER_DEAD_ZONE = 0.25f;
 
 internal void initControllers();
 internal void closeControllers();
@@ -119,7 +120,9 @@ internal void updateGameController(game_controller_state& oldController, game_co
 
 internal void updateGameButton(game_button_state& oldButton, game_button_state& newButton, bool isDown);
 
-internal void updateGameAxis(game_axis_state& oldAxis, game_axis_state& newAxis, int16 value);
+internal void updateGameAxis(game_axis_state& newAxis, int16 value);
+
+internal void updateAxisFromDpad(game_controller_state& gameController, controllerState& controllerState);
 // ** AUDIO **
 
 static const uint32 SDL_AUDIO_BUFFER_SIZE_BYTES = 2048;
@@ -142,6 +145,14 @@ struct dualBuffer
 	void* region2Start;
 	uint32 region1Samples;
 	uint32 region2Samples;
+
+	dualBuffer()
+	{
+		region1Start = NULL;
+		region2Start = NULL;
+		region1Samples = 0;
+		region2Samples = 0;
+	}
 };
 
 void* gameInputSoundData;
@@ -222,22 +233,18 @@ int main(int argc, char *argv[])
 					
 	sdlResizeWindowTexture(gWindowBuffer, renderer, windowWidth, windowHeight);
 
-
-	// not an offset but speed of grardient move
-	uint32 xOffset = 1;
-	uint32 yOffset = 0;
-
 	initAudio(48000);
 	
 	// How many times the counter updates per second 
+	/*
 	uint64 performanceCounterFrequency = SDL_GetPerformanceFrequency();
 	uint64 lastCounter = SDL_GetPerformanceCounter();
-	
 	uint64 lastCycleCount = _rdtsc();
+	*/
 
 	// for updating input
-	game_input_state input1 = {};
-	game_input_state input2 = {};
+	game_input_state input1;
+	game_input_state input2;
 	game_input_state* pOldInput = &input1;
 	game_input_state* pNewInput = &input2;
 
@@ -246,9 +253,10 @@ int main(int argc, char *argv[])
 #else
 	void* baseAddress = (void*)0;	
 #endif
-	game_memory gameMemory = {};
+	game_memory gameMemory;
 	gameMemory.permanentStorageSize = SizeMegaBytes(64);
-	gameMemory.transientStorageSize = SizeGigaBytes(4);
+	// 32 bit cannot handle 4 gigabytes
+	gameMemory.transientStorageSize = SizeGigaBytes(1); 
 	uint64 totalMemorySize = gameMemory.permanentStorageSize + gameMemory.transientStorageSize;
 	gameMemory.permanentStoragePointer = mmap( baseAddress,  // place for memory
 		totalMemorySize, // how many bytes
@@ -267,42 +275,74 @@ int main(int argc, char *argv[])
 	
 	while(running)
 	{
-		SDL_Event event;
-		while(SDL_PollEvent(&event) != 0)
-		{
-			handleEvent(&event); // sets the running to false if quitting
-		}
-
 		game_input_state& oldInput = *pOldInput;
 		game_input_state& newInput = *pNewInput;
 
+		SDL_Event event;
+		while(SDL_PollEvent(&event) != 0)
+		{
+			switch(event.type)
+			{
+				
+				// record keyboard input here.
+				case SDL_KEYDOWN:
+				case SDL_KEYUP:
+				{
+					// Discard repeats
+					if (event.key.repeat == 0)
+					{
+						SDL_Keycode keyCode = event.key.keysym.sym;
+						bool wasDown = event.key.state == SDL_RELEASED;
+						handleKey(keyCode, wasDown);
+					}
+				} break;
+
+				// Handle all other events
+				default:
+				{
+					handleEvent(&event); // sets the running to false if quitting
+				}
+			}
+		}
+
+
+		// updates both gamepad and keyboard input
 		handleInput(oldInput, newInput);
+
 		updateGame(gWindowBuffer, newInput, gameMemory);
 		sdlUpdateWindow(gWindowBuffer, renderer);
 		
+		replaceOldInput(pOldInput, pNewInput);
+		// FPS calculation
+
+		/*
 		uint64 endCounter = SDL_GetPerformanceCounter();
 		uint64 counterElapsed = endCounter - lastCounter;
 		
-		// integer division returns as zero if divided is smaller
-		// uint64 secondsElapsedInFrame = counterElapsed / performanceCounterFrequency;
 		uint64 msPerFrame = (1000 * counterElapsed) / performanceCounterFrequency;
-		// uint64 fps = (1 / (msPerFrame / 1000)); // < Arithmetic exception> Division by zero
-		// uint64 fps = (1 / counterElapsed) / performanceCounterFrequency; // < Arithmetic exception
-		// 1 / counterElapsed -> 0 / 10000000 -> 0
-		uint64 altFps = performanceCounterFrequency / counterElapsed;
-		// This works because 1 000 000 000 / 65 000 000 > 0
 		
 		uint64 endCycleCount = _rdtsc();
 		uint64 elapsedCycleCount = endCycleCount - lastCycleCount;
 		lastCycleCount = endCycleCount;
 		uint64 megaelapsedCycleCount = elapsedCycleCount / (1000 * 1000);
-		
-		// printf("MsF: %lu FpS: %lu mCpF: %lu\n", msPerFrame, altFps, megaelapsedCycleCount );
 		lastCounter = endCounter;
 
+		 printf("MsF: %lu FpS: %lu mCpF: %lu\n", msPerFrame, altFps, megaelapsedCycleCount );
 
-		replaceOldInput(pOldInput, pNewInput);
+		*/
+		// Calculation done wrong:
+		
+		// integer division returns as zero if divided is smaller
+		/// uint64 secondsElapsedInFrame = counterElapsed / performanceCounterFrequency;
+
+		// < Arithmetic exception
+		// 1 / counterElapsed -> 0 / 10000000 -> 0
+		// uint64 fps = (1 / counterElapsed) / performanceCounterFrequency; 
+
+		// This works because 1 000 000 000 / 65 000 000 > 0
+		// uint64 altFps = performanceCounterFrequency / counterElapsed;
 	}
+	closeControllers();
 	SDL_CloseAudio();
 	SDL_Quit();
 	delete gWindowBuffer;
@@ -344,7 +384,7 @@ void closeControllers()
 
 void initAudio(int32 samplesPerSecond)
 {
-	SDL_AudioSpec requirements = {0};
+	SDL_AudioSpec requirements;
 	SDL_AudioSpec obtained;
 	requirements.freq = samplesPerSecond;
 	requirements.format = AUDIO_S16LSB;
@@ -444,11 +484,7 @@ void clearRingBuffer()
 dualBuffer prepareSoundBuffer()
 {
 	// Initialize to zero
-	dualBuffer soundBuffer = {};
-	soundBuffer.region1Start = NULL;
-	soundBuffer.region1Start = NULL;
-	soundBuffer.region1Samples = 0;
-	soundBuffer.region2Samples = 0;
+	dualBuffer soundBuffer;
 
 	if (ringBuffer.updateNeeded)
 	{
@@ -460,11 +496,11 @@ dualBuffer prepareSoundBuffer()
 		// We don't actually use the writeCursorBytes to anything, we want 
 		// the part of the buffer where left with runningSampleIndex
 		
-		int32 wantedWriteByte = (audioConfig.runningSampleIndex * audioConfig.bytesPerSample) 
+		uint32 wantedWriteByte = (audioConfig.runningSampleIndex * audioConfig.bytesPerSample) 
 			% ringBuffer.sizeBytes;
-		int32 targetCursorByte = ringBuffer.playCursorBytes + (audioConfig.latencyBytes);
+		uint32 targetCursorByte = ringBuffer.playCursorBytes + (audioConfig.latencyBytes);
 		targetCursorByte = targetCursorByte % ringBuffer.sizeBytes;
-		int32 bytesToWrite = 0;
+		uint32 bytesToWrite = 0;
 		
 		SDL_UnlockAudioDevice(audioDevice);
 
@@ -479,7 +515,7 @@ dualBuffer prepareSoundBuffer()
 		}
 		
 		void* region1start = (uint8*)ringBuffer.data + wantedWriteByte;
-		int32 region1sizeBytes = bytesToWrite;
+		uint32 region1sizeBytes = bytesToWrite;
 		
 		// Check if about to write over the end of buffer
 		if (wantedWriteByte + region1sizeBytes > ringBuffer.sizeBytes)
@@ -488,7 +524,7 @@ dualBuffer prepareSoundBuffer()
 		}
 		
 		void* region2start = ringBuffer.data;
-		int32 region2sizeBytes = bytesToWrite - region1sizeBytes;
+		uint32 region2sizeBytes = bytesToWrite - region1sizeBytes;
 		
 		soundBuffer.region1Start = region1start;
 		soundBuffer.region1Samples = region1sizeBytes / audioConfig.bytesPerSample;
@@ -583,14 +619,14 @@ void handleEvent(SDL_Event *event)
 				{
 					printf("SDL_WINDOWEVENT_SIZE_CHANGED (%d,%d)\n",
 						event->window.data1, event->window.data2);
-					//handleWindowResizeEvent(event);
+					handleWindowResizeEvent(event);
 				} break;
 
 				case SDL_WINDOWEVENT_RESIZED:
 				{
 					printf("SDL_WINDOWEVENT_SIZE_RESIZED (%d,%d)\n",
 						event->window.data1, event->window.data2);
-					//handleWindowResizeEvent(event);
+					handleWindowResizeEvent(event);
 				} break;
 				case SDL_WINDOWEVENT_EXPOSED:
 				{
@@ -598,13 +634,6 @@ void handleEvent(SDL_Event *event)
 				} break;
 			}
 		}
-		case SDL_KEYDOWN:
-		case SDL_KEYUP:
-		{
-			SDL_Keycode keyCode = event->key.keysym.sym;
-			bool wasDown = event->key.state;
-			handleKey(keyCode, wasDown);
-		} break;
 
 		// Controllers added or changed
 		// SDL_CONTROLLERDEVICEADDED, SDL_CONTROLLERDEVICEREMOVED
@@ -625,7 +654,7 @@ void handleInput(game_input_state& oldInput, game_input_state& outNewInput)
 		pad = controllers[cIndex].handle;
 		if (pad != NULL)
 		{
-			if (SDL_GameControllerGetAttached(pad));
+			if (SDL_GameControllerGetAttached(pad))
 			{
 				controllers[cIndex].state.A = (SDL_GameControllerGetButton(pad, 
 					SDL_CONTROLLER_BUTTON_A) == 1);
@@ -653,17 +682,31 @@ void handleInput(game_input_state& oldInput, game_input_state& outNewInput)
 				SDL_CONTROLLER_AXIS_LEFTX);
 				controllers[cIndex].state.lstickY = SDL_GameControllerGetAxis(pad,
 				SDL_CONTROLLER_AXIS_LEFTY);
+
+
+				// set values in newInput using the values from SDL and oldInput
+				game_controller_state& oldController = oldInput.controllers[cIndex];
+				game_controller_state& newController = outNewInput.controllers[cIndex];
+				controllerState& sdlController = controllers[cIndex].state;
+
+				updateGameController(oldController, newController, sdlController);
+
+				newController.isConnected = true;
 			}
-
-
-			// set values in newInput using the values from SDL and oldInput
-			game_controller_state& oldController = oldInput.controllers[cIndex];
-			game_controller_state& newController = outNewInput.controllers[cIndex];
-			controllerState& sdlController = controllers[cIndex].state;
-
-			updateGameController(oldController, newController, sdlController);
+			else
+			{
+				outNewInput.controllers[cIndex].isConnected = false;
+			}
 		}
 	}
+
+	// update keyboard
+	game_controller_state& oldKeyboard = oldInput.keyboard;
+	game_controller_state& newKeyboard = outNewInput.keyboard;
+
+	controllerState& keyboardState = keyboard.state;
+	updateGameController(oldKeyboard, newKeyboard, keyboardState);
+	updateAxisFromDpad(newKeyboard, keyboardState);
 }
 
 void replaceOldInput(game_input_state* oldInput, game_input_state* newInput)
@@ -675,12 +718,33 @@ void replaceOldInput(game_input_state* oldInput, game_input_state* newInput)
 
 void updateGameController(game_controller_state& oldController, game_controller_state& newController, controllerState& sdlController)
 {
-	updateGameButton(oldController.up, newController.up, sdlController.Y);
-	updateGameButton(oldController.down, newController.down, sdlController.A);
-	updateGameButton(oldController.left, newController.left, sdlController.X);
-	updateGameButton(oldController.right, newController.right, sdlController.B);
-	updateGameAxis(oldController.xAxis, newController.xAxis, sdlController.lstickX);
-	updateGameAxis(oldController.yAxis, newController.yAxis, sdlController.lstickY);
+	updateGameButton(oldController.actionUp, newController.actionUp, sdlController.Y);
+	updateGameButton(oldController.actionDown, newController.actionDown, sdlController.A); 
+	
+	updateGameButton(oldController.actionLeft, newController.actionLeft, sdlController.X);
+	updateGameButton(oldController.actionRight, newController.actionRight, sdlController.B);
+
+	updateGameButton(oldController.start, newController.start, sdlController.START);
+	updateGameButton(oldController.back, newController.back, sdlController.BACK);
+	updateGameAxis(newController.xAxis, sdlController.lstickX);
+	updateGameAxis(newController.yAxis, sdlController.lstickY);
+
+	// If dpad is used, override axis values with that
+	updateAxisFromDpad(newController, sdlController);
+
+	// Set move buttons based on stick value
+	const float deadZone = CONTROLLER_DEAD_ZONE;
+	bool32 lstickUp = newController.yAxis.average > deadZone;
+	updateGameButton(oldController.moveUp, newController.moveUp, lstickUp);
+
+	bool32 lstickDown = newController.yAxis.average < -deadZone;
+	updateGameButton(oldController.moveDown, newController.moveDown, lstickDown);
+	
+	bool32 lstickLeft = newController.xAxis.average < -deadZone;
+	updateGameButton(oldController.moveLeft, newController.moveLeft, lstickLeft);
+
+	bool32 lstickRight = newController.xAxis.average > deadZone;
+	updateGameButton(oldController.moveRight, newController.moveRight, lstickRight);
 
 	// TODO: Set isAnalog by usage of sticks or D-pad?
 	newController.isAnalog = true;
@@ -692,7 +756,7 @@ void updateGameButton(game_button_state& oldButton, game_button_state& newButton
 	newButton.halfTransitions = (oldButton.endedDown != newButton.endedDown) ? 1 : 0;
 }
 
-void updateGameAxis(game_axis_state& oldAxis, game_axis_state& newAxis, int16 value)
+void updateGameAxis(game_axis_state& newAxis, int16 value)
 {
 	int16 rawAxis = value;
 	real32 axisValue = 0.0f;
@@ -705,11 +769,59 @@ void updateGameAxis(game_axis_state& oldAxis, game_axis_state& newAxis, int16 va
 		axisValue = -1.0f * (real32)rawAxis / (real32)CONTROLLER_AXIS_MIN_VALUE;
 	}
 
-	// TODO: Deadzone 
+	// When input comes out of deadzone,
+	// it should start from 0.0f and not jump
+	// to treshold value
+	// Limit axis value to be [0, 1-deadzone]
+
+	const float deadZone = CONTROLLER_DEAD_ZONE;
+	const float adjustedRange = 1.0f - deadZone;
+	if (axisValue <= -deadZone)
+	{
+		axisValue += deadZone;
+	}
+	else if(axisValue >= deadZone)
+	{
+		axisValue -= deadZone;
+	}
+	else
+	{
+		axisValue = 0.0f;
+	}
+
+	axisValue = axisValue / adjustedRange;
 	
-	newAxis.start = oldAxis.end;
-	newAxis.end = axisValue;
-	newAxis.min = newAxis.max = newAxis.end;
+
+	newAxis.average = axisValue;
+}
+
+internal void updateAxisFromDpad(game_controller_state& gameController, controllerState& controllerState)
+{
+	real32 updown = 0;
+
+	if (controllerState.UP)
+	{
+		updown -= 1;
+	}
+
+	if (controllerState.DOWN)
+	{
+		updown += 1;
+	}
+
+	gameController.yAxis.average = updown;  
+
+	real32 leftRight = 0;
+
+	if (controllerState.LEFT)
+	{
+		leftRight -= 1;
+	}
+	if (controllerState.RIGHT)
+	{
+		leftRight += 1;
+	}
+	gameController.xAxis.average = leftRight; 
 }
 
 void handleKey(SDL_Keycode keyCode, bool wasDown)
@@ -880,7 +992,7 @@ void updateGame(WindowBuffer* windowBuffer, game_input_state& inputState, game_m
 
 	
 	dualBuffer preparedBuffer = prepareSoundBuffer();
-	game_sound_buffer gameSoundBuffer = {};
+	game_sound_buffer gameSoundBuffer;
 	
 	gameSoundBuffer.samples = gameInputSoundData;
 	gameSoundBuffer.samplesToWrite = preparedBuffer.region1Samples 
@@ -902,7 +1014,7 @@ void updateGame(WindowBuffer* windowBuffer, game_input_state& inputState, game_m
 
 game_pixel_buffer preparePixelBuffer(WindowBuffer* buffer)
 {
-	game_pixel_buffer gameScreenBuffer = {};
+	game_pixel_buffer gameScreenBuffer;
 	void *texturePixels = NULL;
 	int32 result = 0;
 	int32 texturePitch = 0;
@@ -1004,7 +1116,7 @@ SDL_Renderer* getRenderer(uint32 windowID)
 internal debug_read_file_result
 debugPlatformReadEntireFile(const char* filename)
 {
-	struct debug_read_file_result result = {};
+	struct debug_read_file_result result;
 	//when reading binary file, use O_BINARY
 	int fileDescriptor = open(filename, O_RDONLY);
 	if (fileDescriptor == -1)
@@ -1035,7 +1147,7 @@ debugPlatformReadEntireFile(const char* filename)
 	uint8* nextBytePointer = (uint8*)fileContentsBuffer;
 	while (bytesLeftToRead)
 	{
-		uint32 bytesRead = read(fileDescriptor, nextBytePointer, bytesLeftToRead);
+		int32 bytesRead = read(fileDescriptor, nextBytePointer, bytesLeftToRead);
 		if (bytesRead == -1)
 		{
 			debugPlatformFreeFileMemory(fileContentsBuffer);
@@ -1082,7 +1194,7 @@ internal bool32 debugPlatformWriteEntireFile(const char* filename, uint32 memory
 	uint8* nextByteLocation = (uint8*)memory;
 	while (bytesToWrite)
 	{
-		uint32 bytesWritten = write(fileDescriptor, nextByteLocation, bytesToWrite);
+		int32 bytesWritten = write(fileDescriptor, nextByteLocation, bytesToWrite);
 		if (bytesWritten == -1)
 		{
 			close(fileDescriptor);
