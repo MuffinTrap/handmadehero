@@ -178,6 +178,12 @@ internal void handleKey(SDL_Keycode, bool wasDown);
 
 internal void updateGame(WindowBuffer* windowBuffer, game_input_state& inputState, game_memory& gameMemory);
 
+// ** TIME
+internal int32 SDLGetWindowRefreshRate(SDL_Window* window);
+inline uint64 getWallClock();
+inline real32 getSecondsElapsed(uint64 start, uint64 end);
+
+global_variable uint64 gPerformanceCounterFrequency;
 // ** SDL CODE
 
 int main(int argc, char *argv[])
@@ -226,6 +232,12 @@ int main(int argc, char *argv[])
 	windowWidth = 800;
 	windowHeight = 600;
 
+	// Target refresh rate for the game
+	// TODO: How do we get the actual value from the device?
+	uint32 monitorRefreshHz = SDLGetWindowRefreshRate(window);
+	uint32 gameUpdateHz = 30;
+	real32 targetSecondsPerFrame = 1.0f / (real32)gameUpdateHz;
+
 	int32 bytesPerPixel = 4;
 	// Create buffer
 	gWindowBuffer = new WindowBuffer();
@@ -236,11 +248,9 @@ int main(int argc, char *argv[])
 	initAudio(48000);
 	
 	// How many times the counter updates per second 
-	/*
-	uint64 performanceCounterFrequency = SDL_GetPerformanceFrequency();
-	uint64 lastCounter = SDL_GetPerformanceCounter();
+	gPerformanceCounterFrequency = SDL_GetPerformanceFrequency();
+	uint64 lastCounter = getWallClock();
 	uint64 lastCycleCount = _rdtsc();
-	*/
 
 	// for updating input
 	game_input_state input1;
@@ -310,26 +320,36 @@ int main(int argc, char *argv[])
 		handleInput(oldInput, newInput);
 
 		updateGame(gWindowBuffer, newInput, gameMemory);
-		sdlUpdateWindow(gWindowBuffer, renderer);
 		
 		replaceOldInput(pOldInput, pNewInput);
 		// FPS calculation
 
-		/*
-		uint64 endCounter = SDL_GetPerformanceCounter();
-		uint64 counterElapsed = endCounter - lastCounter;
+		uint64 endCounter = getWallClock();
 		
-		uint64 msPerFrame = (1000 * counterElapsed) / performanceCounterFrequency;
-		
+		real32 secondsElapsedForFrame = getSecondsElapsed(lastCounter, endCounter);
+
+		if (secondsElapsedForFrame < targetSecondsPerFrame)
+		{
+			uint32 msToSleep = (targetSecondsPerFrame - secondsElapsedPerFrame) * 1000.0f;
+			SDL_Delay(msToSleep);
+			secondsElapsedForFrame = getSecondsElapsed(lastCounter, getWallClock());
+
+		}
+		else
+		{
+			//TODO: Missed framerate!!!
+		}
 		uint64 endCycleCount = _rdtsc();
 		uint64 elapsedCycleCount = endCycleCount - lastCycleCount;
 		lastCycleCount = endCycleCount;
 		uint64 megaelapsedCycleCount = elapsedCycleCount / (1000 * 1000);
-		lastCounter = endCounter;
 
-		 printf("MsF: %lu FpS: %lu mCpF: %lu\n", msPerFrame, altFps, megaelapsedCycleCount );
+		real32 fps = 1.0f / (secondsElapsedForFrame);
+		real32 msPerFrame = secondsElapsedForFrame * 1000.0f;
 
-		*/
+		 printf("MsF: %f2.2 FpS: %f2.2 mCpF: %lu\n", msPerFrame, fps, megaelapsedCycleCount );
+
+		lastCounter = getWallClock();
 		// Calculation done wrong:
 		
 		// integer division returns as zero if divided is smaller
@@ -341,6 +361,11 @@ int main(int argc, char *argv[])
 
 		// This works because 1 000 000 000 / 65 000 000 > 0
 		// uint64 altFps = performanceCounterFrequency / counterElapsed;
+
+
+		// Update frame at the very end
+
+		sdlUpdateWindow(gWindowBuffer, renderer);
 	}
 	closeControllers();
 	SDL_CloseAudio();
@@ -350,6 +375,39 @@ int main(int argc, char *argv[])
 	free(gameInputSoundData);
 	munmap(gameMemory.permanentStoragePointer, gameMemory.permanentStorageSize);
 	return(0);
+}
+
+uint64 getWallClock()
+{
+		uint64 counter = SDL_GetPerformanceCounter();
+		return counter;
+}
+
+real32 getSecondsElapsed(uint64 start, uint64 end)
+{
+		uint64 counterElapsed = end - start;
+		
+		real32 secondsElapsed = ((real32)counterElapsed) 
+		/ ((real32)gPerformanceCounterFrequency);
+
+		return secondsElapsed;
+}
+
+int32 SDLGetWindowRefreshRate(SDL_Window* window)
+{
+	SDL_DisplayMode mode;
+	int32 displayIndex = SDL_GetWindowDisplayIndex(window);
+	// default value when cannot get correct one
+	int32 defaultRefreshRate = 60;
+	if (SDL_GetDesktopDisplayMode(displayIndex, &mode) != 0)
+	{
+		return defaultRefreshRate;
+	}
+	if (mode.refresh_rate == 0)
+	{
+		return defaultRefreshRate;
+	}
+	return mode.refresh_rate;
 }
 
 void initControllers()
