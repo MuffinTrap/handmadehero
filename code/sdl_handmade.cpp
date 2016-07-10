@@ -78,7 +78,6 @@ internal void renderPixelBuffer(WindowBuffer* buffer);
 internal WindowDimensions getWindowDimensions(uint32 windowID);
 internal SDL_Renderer* getRenderer(uint32 windowID);
 
-
 // ** INPUT **
 // 
 struct controllerState
@@ -184,6 +183,26 @@ inline uint64 getWallClock();
 inline real32 getSecondsElapsed(uint64 start, uint64 end);
 
 global_variable uint64 gPerformanceCounterFrequency;
+
+
+
+// ** DEBUG
+struct debugTimeMarker
+{
+	uint32 playCursorBytes;
+	uint32 writeCursorBytes;
+	
+	debugTimeMarker()
+	{
+		playCursorBytes = 0;
+		writeCursorBytes = 0;
+	}
+};
+
+internal void
+SDLDebugSyncDisplay(WindowBuffer* buffer, uint32 arrayCount
+	, debugTimeMarker* timeMarkers, ringBufferInfo& ringBufferInfo, real32 targetSecondsPerFrame);
+
 // ** SDL CODE
 
 int main(int argc, char *argv[])
@@ -277,12 +296,17 @@ int main(int argc, char *argv[])
 
 	gameMemory.transientStoragePointer = (uint8*)(gameMemory.permanentStoragePointer) + gameMemory.permanentStorageSize;
 
+
 	if (gameMemory.permanentStoragePointer == MAP_FAILED)
 	{
 		printf("Could not allocate memory for game.\n");
 		return 1;
 	}
 	
+	// Audio debug
+	debugTimeMarker timeMarkers[gameUpdateHz / 2];
+	uint32 timeMarkerIndex = 0;
+
 	while(running)
 	{
 		game_input_state& oldInput = *pOldInput;
@@ -330,7 +354,7 @@ int main(int argc, char *argv[])
 
 		if (secondsElapsedForFrame < targetSecondsPerFrame)
 		{
-			uint32 msToSleep = (targetSecondsPerFrame - secondsElapsedPerFrame) * 1000.0f;
+			uint32 msToSleep = (targetSecondsPerFrame - secondsElapsedForFrame) * 1000.0f;
 			SDL_Delay(msToSleep);
 			secondsElapsedForFrame = getSecondsElapsed(lastCounter, getWallClock());
 
@@ -365,7 +389,25 @@ int main(int argc, char *argv[])
 
 		// Update frame at the very end
 
+		// Debug audio timing
+#if HANDMADE_INTERNAL
+		SDLDebugSyncDisplay(gWindowBuffer, ArrayCount(timeMarkers)
+		, timeMarkers, ringBuffer, targetSecondsPerFrame);
+#endif
+
 		sdlUpdateWindow(gWindowBuffer, renderer);
+
+#if HANDMADE_INTERNAL
+		timeMarkers[timeMarkerIndex].playCursorBytes= ringBuffer.playCursorBytes;
+		timeMarkers[timeMarkerIndex].writeCursorBytes= ringBuffer.writeCursorBytes;
+		
+		timeMarkerIndex++;
+		if (timeMarkerIndex > ArrayCount(timeMarkers))
+		{
+			timeMarkerIndex = 0;
+		}
+
+#endif
 	}
 	closeControllers();
 	SDL_CloseAudio();
@@ -1093,6 +1135,7 @@ game_pixel_buffer preparePixelBuffer(WindowBuffer* buffer)
 		gameScreenBuffer.texturePitch = texturePitch;
 		gameScreenBuffer.bitmapWidth = buffer->bitmapWidth;
 		gameScreenBuffer.bitmapHeight = buffer->bitmapHeight;
+		gameScreenBuffer.bytesPerPixel = buffer->bytesPerPixel;
 	}
 
 	return gameScreenBuffer;
@@ -1264,5 +1307,63 @@ internal bool32 debugPlatformWriteEntireFile(const char* filename, uint32 memory
 
 	close(fileDescriptor);
 	return true;
+}
+
+internal void
+SDLDebugDrawVertical(game_pixel_buffer& buffer, int32 x, 
+	int32 top, int32 bottom, uint32 color)
+{
+
+
+	uint8* pixel = (uint8*)buffer.texturePixels
+		+ x * buffer.bytesPerPixel 
+		+ top * buffer.texturePitch;
+
+	for(int y = 0;
+		y < bottom;
+		y++)
+		{
+			*(uint32*)pixel = color;
+			pixel += buffer.texturePitch;
+		}
+}
+
+void
+SDLDebugSyncDisplay(WindowBuffer* buffer, uint32 arrayCount, debugTimeMarker* markerArray, ringBufferInfo& ringBufferInfo, real32 targetSecondsPerFrame)
+{
+	game_pixel_buffer writebuffer = preparePixelBuffer(buffer);
+	
+	int32 padX = 16;
+	int32 padY = 16;
+	uint8 blue = (255);
+	uint8 green = (255);
+	
+	//uint32 color = ((green << 8) | blue);
+	uint32 whitecolor = 0xFFFFFFFF;
+	uint32 redcolor = 0xFFFF0000;
+	uint32 color = whitecolor;
+
+	int32 top = padY; 
+	int32 bottom = buffer->bitmapHeight - padY;
+	real32 c = (real32)(buffer->bitmapWidth - 2 * padX)/ (real32)ringBufferInfo.sizeBytes;
+	for (uint32 playCursorIndex = 0;
+		playCursorIndex < arrayCount;
+		playCursorIndex++)
+		{
+			uint32 playCursor = markerArray[playCursorIndex].playCursorBytes;
+			uint32 writeCursor = markerArray[playCursorIndex].writeCursorBytes;
+			
+			hm_assert(playCursor < ringBufferInfo.sizeBytes);
+			
+			int32 x = padX + (int32)(c * (real32)playCursor);
+			color = whitecolor;
+			SDLDebugDrawVertical(writebuffer, x, top, bottom, color);
+			
+			x = padX + (int32)(c * (real32)writeCursor);
+			color = redcolor;
+			SDLDebugDrawVertical(writebuffer, x, top, bottom, color);
+		}
+		
+	renderPixelBuffer(buffer);
 }
 #endif

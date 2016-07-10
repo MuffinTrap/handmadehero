@@ -98,6 +98,7 @@ struct game_pixel_buffer
 	int32 texturePitch;
 	int32 bitmapWidth;
 	int32 bitmapHeight;
+	int32 bytesPerPixel;
 
 	game_pixel_buffer()
 	{
@@ -105,6 +106,7 @@ struct game_pixel_buffer
 		texturePitch = 0;
 		bitmapWidth = 0;
 		bitmapHeight = 0;
+		bytesPerPixel = 0;
 	}
 };
 
