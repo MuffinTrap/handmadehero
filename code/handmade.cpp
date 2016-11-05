@@ -3,7 +3,9 @@
 
 global_variable game_audioConfig audioConfig;
 
-void gameUpdateAndRender(game_pixel_buffer* pixelBuffer, game_sound_buffer* soundBuffer, game_input_state* inputState, game_state* gameState)
+#include <cstring>
+
+void gameUpdateAndRender(game_pixel_buffer* pixelBuffer, game_input_state* inputState, game_state* gameState)
 {
 
 	// Check controller validity
@@ -26,9 +28,15 @@ void gameUpdateAndRender(game_pixel_buffer* pixelBuffer, game_sound_buffer* soun
 
 	}
 
-	gameOutputSound(soundBuffer);
-	renderWeirdGradient(pixelBuffer, xOffset, yOffset);
+	//renderWeirdGradient(pixelBuffer, xOffset, yOffset);
+	renderBlackScreen(pixelBuffer);
 }
+
+void gameGetSoundSamples(game_sound_buffer* buffer)
+{
+	gameOutputSound(buffer);
+}
+
 
 
 void gameOutputSound(game_sound_buffer* buffer)
@@ -71,11 +79,27 @@ void writeSineWave(void* samples, uint32 samplesToWrite)
 				runningSampleIndex++;
 				// Advance t for sine by one sample
 				audioConfig.tForSine += (audioConfig.sineWavePeriod) / (real32)(audioConfig.samplesPerWavePeriod);
+				
+				if (audioConfig.tForSine > audioConfig.sineWavePeriod)
+				{
+						audioConfig.tForSine -= audioConfig.sineWavePeriod;
+				}
 			}
 		
 	audioConfig.runningSampleIndex = runningSampleIndex;
 
 }
+
+void renderBlackScreen(game_pixel_buffer* pixelBuffer)
+{
+	void *texturePixels = pixelBuffer->texturePixels;
+	int32 texturePitch = pixelBuffer->texturePitch;
+	int32 height = pixelBuffer->bitmapHeight;
+	
+	uint32 black = 0xFF000000;
+	memset(texturePixels, black, texturePitch * height);
+}
+
 
 void renderWeirdGradient(game_pixel_buffer *pixelBuffer, int32 xOffset, int32 yOffset)
 {

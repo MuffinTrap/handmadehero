@@ -113,18 +113,36 @@ struct game_pixel_buffer
 struct game_audioConfig
 {
 	int32 samplesPerSecond;
+	int32 bytesPerSample;
+	uint32 runningSampleIndex;
+
+	// For measuring latency 
+	int32 currentLatencyBytes; // How much latency we have currently
+	int32 currentLatencySeconds; // How much latency seconds we have currently
+	
+	// For sound syncing 
+	int32 safetyBytes;
+	int32 expectedSoundBytesPerFrame;
+	int32 expectedFrameBoundaryByte;
+	uint32 gameUpdateHz;
+	bool32 audioCardIsLatent;
+	int32 expectedBytesUntilFlip;
+	uint64 audioWallClock;
+	uint64 flipWallClock;
+	real32 targetSecondsPerFrame;
+	
+	int32 latencyBytes; // how much ahead of the playcursor 
+	// we would like to be
+	
+	// For playing debug sinewave 
+		// how long is one phase to get enough Hz in second
+	// -> how many samples for one phase
 	int32 toneHz; // how many phases in second
 	int16 toneVolume;
-	uint32 runningSampleIndex;
-	// how long is one phase to get enough Hz in second
-	// -> how many samples for one phase
+	real32 tForSine;
 	int32 samplesPerWavePeriod;
 	int32 halfSamplesPerWavePeriod;
 	int32 sineWavePeriod;
-	int32 bytesPerSample;
-	real32 tForSine;
-	int32 latencyBytes; // how much ahead of the playcursor 
-	// we would like to be
 };
 
 struct game_sound_buffer
@@ -212,10 +230,15 @@ struct game_input_state
 	}
 };
 
+// Used by platform 
 internal void 
-gameUpdateAndRender(game_pixel_buffer* pixelBuffer, game_sound_buffer* soundBuffer, game_input_state* inputState, game_state* gameState);
+gameUpdateAndRender(game_pixel_buffer* pixelBuffer, game_input_state* inputState, game_state* gameState);
 
+// This needs to be fast, about a millisecond to keep sound in sync
+internal void
+gameGetSoundSamples(game_sound_buffer* buffer);
 
+// Internal use
 internal void 
 gameOutputSound(game_sound_buffer* buffer);
 
@@ -224,5 +247,8 @@ writeSineWave(void* samples, uint32 sampleCountToWrite);
 
 internal void 
 renderWeirdGradient(game_pixel_buffer* buffer, int32 xOffset, int32 yOffset);
+
+internal void
+renderBlackScreen(game_pixel_buffer* buffer);
 
 #endif 

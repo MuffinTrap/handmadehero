@@ -4,9 +4,11 @@
 
 # Common variables to all builds
 Internal_Debug="-DHANDMADE_INTERNAL=1 -DHANDMADE_SLOW=1"
-CommonFlags="-Wall -Wextra -fno-rtti -fno-exceptions `sdl2-config --cflags --libs`"
+#Internal_Debug=""
+CommonFlags="-fno-rtti -fno-exceptions -Wall -Wextra `sdl2-config --cflags --libs`"
 
 pushd ../build
+#rm sdl_handmade
 c++  $Internal_Debug ../code/sdl_handmade.cpp -o sdl_handmade -g $CommonFlags
 popd
 

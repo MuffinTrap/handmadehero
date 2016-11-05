@@ -29,6 +29,7 @@ static const real32 PI32 = 3.14159265359f;
 #include <assert.h>
 #include <math.h> // sin(), make your own laters.
 
+
 // ** Cross platform API **
 
 // Cross platform code include
@@ -43,8 +44,11 @@ static const real32 PI32 = 3.14159265359f;
 #include "immintrin.h" // Cpu cycle counter, official place
 #include "x86intrin.h" // GCC place for cycle counter
 
+#include "sdl_handmade.h"
+
 // static variables are initialized to 0
 global_variable bool running;
+global_variable bool globalPause;
 
 
 // ** RENDERING **
@@ -52,23 +56,16 @@ global_variable bool running;
 // According to SDL documentation
 // we should use LockTexture for frequently changing 
 // textures
-#define USE_TEXTURELOCK true
-
-struct WindowBuffer
+static bool getUseSDLTextureLock()
 {
-	SDL_Texture *texture; 
-	void *bitmapMemory;
-	int32 bitmapWidth;
-	int32 bitmapHeight;
-	int32 bytesPerPixel;
-};
+	return true;
+}
+
+
+
 global_variable WindowBuffer *gWindowBuffer;
 
-struct WindowDimensions
-{
-	int32 width;
-	int32 height;
-};
+
 
 internal void handleWindowResizeEvent(SDL_Event* event);
 internal void sdlResizeWindowTexture(WindowBuffer *buffer, SDL_Renderer *renderer, int32 width, int32 height);
@@ -158,7 +155,11 @@ void* gameInputSoundData;
 
 global_variable ringBufferInfo ringBuffer;
 
-internal void initAudio(int32 samplesPerSecond);
+// Audio debug
+global_variable	sdl_audio_debug_marker* timeMarkersPointer;
+global_variable uint32 timeMarkerIndex = 0;
+
+internal void initAudio(int32 samplesPerSecond, uint32 gameUpdateHz);
 internal void audioCallback(void *userData, uint8 *buffer, int32 length);
 internal void clearRingBuffer();
 internal dualBuffer prepareSoundBuffer();
@@ -185,28 +186,20 @@ inline real32 getSecondsElapsed(uint64 start, uint64 end);
 global_variable uint64 gPerformanceCounterFrequency;
 
 
-
-// ** DEBUG
-struct debugTimeMarker
-{
-	uint32 playCursorBytes;
-	uint32 writeCursorBytes;
-	
-	debugTimeMarker()
-	{
-		playCursorBytes = 0;
-		writeCursorBytes = 0;
-	}
-};
-
 internal void
 SDLDebugSyncDisplay(WindowBuffer* buffer, uint32 arrayCount
-	, debugTimeMarker* timeMarkers, ringBufferInfo& ringBufferInfo, real32 targetSecondsPerFrame);
+	, sdl_audio_debug_marker* timeMarkers, int currentMarkerIndex, ringBufferInfo& ringBufferInfo);
 
 // ** SDL CODE
 
 int main(int argc, char *argv[])
 {
+
+	for (int i = 0; i < argc; i++)
+	{
+		printf("Argument %d: %s\n", i, argv[i]);
+	}
+	
 	if (SDL_Init(SDL_INIT_VIDEO | 
 		SDL_INIT_GAMECONTROLLER | 
 		SDL_INIT_AUDIO) != 0)
@@ -242,6 +235,7 @@ int main(int argc, char *argv[])
 	initControllers();
 
 	running = true;
+	globalPause = false;
 	// Update window to create the texture
 	int32 windowWidth = 0;
 	int32 windowHeight = 0;
@@ -254,8 +248,10 @@ int main(int argc, char *argv[])
 	// Target refresh rate for the game
 	// TODO: How do we get the actual value from the device?
 	uint32 monitorRefreshHz = SDLGetWindowRefreshRate(window);
+	printf("Monitor refresh rate: %u\n", monitorRefreshHz);
 	uint32 gameUpdateHz = 30;
 	real32 targetSecondsPerFrame = 1.0f / (real32)gameUpdateHz;
+	audioConfig.targetSecondsPerFrame = targetSecondsPerFrame;
 
 	int32 bytesPerPixel = 4;
 	// Create buffer
@@ -264,11 +260,11 @@ int main(int argc, char *argv[])
 					
 	sdlResizeWindowTexture(gWindowBuffer, renderer, windowWidth, windowHeight);
 
-	initAudio(48000);
+	initAudio(48000, gameUpdateHz);
 	
 	// How many times the counter updates per second 
 	gPerformanceCounterFrequency = SDL_GetPerformanceFrequency();
-	uint64 lastCounter = getWallClock();
+	uint64 frameStartCounter = getWallClock();
 	uint64 lastCycleCount = _rdtsc();
 
 	// for updating input
@@ -303,9 +299,9 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 	
-	// Audio debug
-	debugTimeMarker timeMarkers[gameUpdateHz / 2];
-	uint32 timeMarkerIndex = 0;
+	sdl_audio_debug_marker timeMarkers[gameUpdateHz / 2];
+	timeMarkersPointer = timeMarkers;
+
 
 	while(running)
 	{
@@ -343,26 +339,40 @@ int main(int argc, char *argv[])
 		// updates both gamepad and keyboard input
 		handleInput(oldInput, newInput);
 
-		updateGame(gWindowBuffer, newInput, gameMemory);
+		if (!globalPause)
+		{
+			updateGame(gWindowBuffer, newInput, gameMemory);
+		}
 		
 		replaceOldInput(pOldInput, pNewInput);
 		// FPS calculation
 
-		uint64 endCounter = getWallClock();
+		uint64 frameEndCounter = getWallClock();
+		real32 secondsElapsedForFrame = getSecondsElapsed(frameStartCounter, frameEndCounter);
 		
-		real32 secondsElapsedForFrame = getSecondsElapsed(lastCounter, endCounter);
-
 		if (secondsElapsedForFrame < targetSecondsPerFrame)
 		{
 			uint32 msToSleep = (targetSecondsPerFrame - secondsElapsedForFrame) * 1000.0f;
+			msToSleep -= 1; // Prepare that SDL_Delay takes 1 ms longer than should
 			SDL_Delay(msToSleep);
-			secondsElapsedForFrame = getSecondsElapsed(lastCounter, getWallClock());
-
+			secondsElapsedForFrame = getSecondsElapsed(frameStartCounter, getWallClock());
+			
+			// If we have any time left after SDL_Delay, spinlock for that duration
+			while (secondsElapsedForFrame < targetSecondsPerFrame)
+			{
+			  secondsElapsedForFrame = getSecondsElapsed(frameStartCounter, getWallClock());
+			 // nop... 
+			}
 		}
 		else
 		{
 			//TODO: Missed framerate!!!
 		}
+		
+		frameStartCounter = getWallClock();
+		
+#if HANDMADE_INTERNAL
+		// Print FPS
 		uint64 endCycleCount = _rdtsc();
 		uint64 elapsedCycleCount = endCycleCount - lastCycleCount;
 		lastCycleCount = endCycleCount;
@@ -373,7 +383,14 @@ int main(int argc, char *argv[])
 
 		 printf("MsF: %f2.2 FpS: %f2.2 mCpF: %lu\n", msPerFrame, fps, megaelapsedCycleCount );
 
-		lastCounter = getWallClock();
+		// Debug audio timing
+		if (!globalPause)
+		{
+			SDLDebugSyncDisplay(gWindowBuffer, ArrayCount(timeMarkers)
+			, timeMarkers, timeMarkerIndex - 1, ringBuffer);
+		}
+#endif
+		
 		// Calculation done wrong:
 		
 		// integer division returns as zero if divided is smaller
@@ -388,18 +405,15 @@ int main(int argc, char *argv[])
 
 
 		// Update frame at the very end
-
-		// Debug audio timing
-#if HANDMADE_INTERNAL
-		SDLDebugSyncDisplay(gWindowBuffer, ArrayCount(timeMarkers)
-		, timeMarkers, ringBuffer, targetSecondsPerFrame);
-#endif
-
+		// Flip happens here
 		sdlUpdateWindow(gWindowBuffer, renderer);
 
+		audioConfig.flipWallClock = getWallClock();
+		
 #if HANDMADE_INTERNAL
-		timeMarkers[timeMarkerIndex].playCursorBytes= ringBuffer.playCursorBytes;
-		timeMarkers[timeMarkerIndex].writeCursorBytes= ringBuffer.writeCursorBytes;
+		timeMarkers[timeMarkerIndex].flipPlayCursor= ringBuffer.playCursorBytes;
+		timeMarkers[timeMarkerIndex].flipWriteCursor = ringBuffer.writeCursorBytes;
+		timeMarkers[timeMarkerIndex].flipCursor = audioConfig.expectedFrameBoundaryByte;
 		
 		timeMarkerIndex++;
 		if (timeMarkerIndex > ArrayCount(timeMarkers))
@@ -482,7 +496,7 @@ void closeControllers()
 	}
 }
 
-void initAudio(int32 samplesPerSecond)
+void initAudio(int32 samplesPerSecond, uint32 gameUpdateHz)
 {
 	SDL_AudioSpec requirements;
 	SDL_AudioSpec obtained;
@@ -516,7 +530,8 @@ void initAudio(int32 samplesPerSecond)
 		
 	audioConfig.samplesPerSecond = obtained.freq;
 	// 15th of a second latency
-	audioConfig.latencyBytes = (audioConfig.samplesPerSecond * audioConfig.bytesPerSample) / 15;
+	audioConfig.bytesPerSample = sizeof(int16) * 2; // left and right for stereo
+	audioConfig.latencyBytes = (audioConfig.samplesPerSecond * audioConfig.bytesPerSample) / gameUpdateHz;
 	audioConfig.toneHz = 256; // how many phases in second
 	audioConfig.toneVolume = 3000;
 	audioConfig.runningSampleIndex = 0;
@@ -527,9 +542,26 @@ void initAudio(int32 samplesPerSecond)
 	
 	audioConfig.sineWavePeriod = 2.0f * PI32;
 	
+	audioConfig.gameUpdateHz = gameUpdateHz;
 	
-	audioConfig.bytesPerSample = sizeof(int16) * 2; // left and right for stereo
+	audioConfig.expectedSoundBytesPerFrame = (audioConfig.samplesPerSecond 
+		* audioConfig.bytesPerSample) 
+		/ audioConfig.gameUpdateHz;
+	
+	// TODO This is just a quess. Compute this value and see what the lowest reasonable
+	// value is.
+	audioConfig.safetyBytes = ((audioConfig.samplesPerSecond 
+		* audioConfig.bytesPerSample) 
+		/ gameUpdateHz) 
+		/ 2;
+	
+	
+	
+	
 	printf("Audiodefaults bytesPerSample is %d\n", audioConfig.bytesPerSample);
+	printf("Audio init with %d bytes of latency\n", audioConfig.latencyBytes);
+	float latencySeconds = ((float)audioConfig.latencyBytes / (float)audioConfig.bytesPerSample) / (float)audioConfig.samplesPerSecond;
+	printf("Audio latency in seconds is %f\n", latencySeconds);
 	
 	// Create a ring buffer with one second of audio
 	ringBuffer.sizeBytes = audioConfig.samplesPerSecond * audioConfig.bytesPerSample;
@@ -593,13 +625,56 @@ dualBuffer prepareSoundBuffer()
 		// does not change the values that we need to get
 		SDL_LockAudioDevice(audioDevice);
 		
+		/*NOTE .
+		 * Here is how sound output computation works
+		 * 
+		 * We define a safety amount that is the number of samples that we 
+		 * think that our game update loop may vary by. (let's say up to 2 milliseconds)
+		 * 
+		 * When we wake to write audio we will look and see the play cursor position 
+		 * and forecast ahead where the playcursor will be on the next frame boundary.
+		 * 
+		 * We will see if write cursor is before that by at least our safe amount.
+		 * If it is, the target fill position is that frame boundary plus
+		 * one frame.
+		 * This gives us perfect audio sync on low latency.
+		 * 
+		 * 
+		 * If the write cursor is after safety margin then we assume that 
+		 * we can never sync the audio perfectly, we will write one frame's worth of audio
+		 * plus safety amount
+		 * 
+		 * 
+		 * */
+		
+		
 		// We don't actually use the writeCursorBytes to anything, we want 
 		// the part of the buffer where left with runningSampleIndex
 		
 		uint32 wantedWriteByte = (audioConfig.runningSampleIndex * audioConfig.bytesPerSample) 
 			% ringBuffer.sizeBytes;
-		uint32 targetCursorByte = ringBuffer.playCursorBytes + (audioConfig.latencyBytes);
+			
+		uint32 targetCursorByte = 0;
+		
+		// Calculate differently based on audio card latency.
+		
+		if (audioConfig.audioCardIsLatent)
+		{
+			targetCursorByte = (ringBuffer.playCursorBytes 
+			+ audioConfig.expectedSoundBytesPerFrame
+			+ audioConfig.safetyBytes);
+		}
+		else
+		{
+			targetCursorByte = (audioConfig.expectedFrameBoundaryByte + audioConfig.expectedSoundBytesPerFrame);
+		}
+		
+		// wrap
 		targetCursorByte = targetCursorByte % ringBuffer.sizeBytes;
+		
+		// simple implementation	
+		// uint32 targetCursorByte = ringBuffer.playCursorBytes + (audioConfig.latencyBytes);
+		// targetCursorByte = targetCursorByte % ringBuffer.sizeBytes;
 		uint32 bytesToWrite = 0;
 		
 		SDL_UnlockAudioDevice(audioDevice);
@@ -614,6 +689,13 @@ dualBuffer prepareSoundBuffer()
 			bytesToWrite = targetCursorByte - wantedWriteByte;
 		}
 		
+#if HANDMADE_INTERNAL
+		// save to debug marker 
+		timeMarkersPointer[timeMarkerIndex].outputPlayCursor = ringBuffer.playCursorBytes;
+		timeMarkersPointer[timeMarkerIndex].outputWriteCursor = ringBuffer.writeCursorBytes;
+		timeMarkersPointer[timeMarkerIndex].outputLocation = wantedWriteByte;
+		timeMarkersPointer[timeMarkerIndex].outputByteCount = bytesToWrite;
+#endif
 		void* region1start = (uint8*)ringBuffer.data + wantedWriteByte;
 		uint32 region1sizeBytes = bytesToWrite;
 		
@@ -763,7 +845,7 @@ void handleInput(game_input_state& oldInput, game_input_state& outNewInput)
 				controllers[cIndex].state.X = (SDL_GameControllerGetButton(pad, 
 					SDL_CONTROLLER_BUTTON_X) == 1);
 				controllers[cIndex].state.Y = (SDL_GameControllerGetButton(pad, 
-					SDL_CONTROLLER_BUTTON_A) == 1);
+					SDL_CONTROLLER_BUTTON_Y) == 1);
 
 				controllers[cIndex].state.START = (SDL_GameControllerGetButton(pad, 
 					SDL_CONTROLLER_BUTTON_START) == 1);
@@ -971,6 +1053,16 @@ void handleKey(SDL_Keycode keyCode, bool wasDown)
 		{
 			keyboard.state.BACK = down;
 		} break;
+		
+#if HANDMADE_INTERNAL
+		case SDLK_p:
+		{
+			if (down)
+			{
+				globalPause = !globalPause;
+			}
+		} break;
+#endif 
 	}
 }
 
@@ -1011,17 +1103,20 @@ void sdlResizeWindowTexture(WindowBuffer *buffer, SDL_Renderer *renderer, int32 
 		buffer->texture = NULL;
 	}
 
-	#if USE_LOCKTEXTURE
-	//nop
-	#else
-	if (buffer->bitmapMemory)
+	if (getUseSDLTextureLock())
 	{
-		// if we used malloc, here would be free()
-		munmap(buffer->bitmapMemory, 
-			buffer->bitmapWidth * buffer->bitmapHeight * buffer->bytesPerPixel);
-		buffer->bitmapMemory = NULL;
+		//nop
 	}
-	#endif
+	else
+	{
+		if (buffer->bitmapMemory)
+		{
+			// if we used malloc, here would be free()
+			munmap(buffer->bitmapMemory, 
+				buffer->bitmapWidth * buffer->bitmapHeight * buffer->bytesPerPixel);
+			buffer->bitmapMemory = NULL;
+		}
+	}
 
 	buffer->texture = SDL_CreateTexture(
 		renderer, SDL_PIXELFORMAT_ARGB8888,
@@ -1049,24 +1144,26 @@ void sdlResizeWindowTexture(WindowBuffer *buffer, SDL_Renderer *renderer, int32 
 	// 4 * 8 = 32 bits
 	// bitmapMemory = malloc( width * height * bytesPerPixel); 
 
-	#if USE_LOCKTEXTURE
-	// nop
-	#else
-	// in linux we have mmap() which is similar to windows's 
-	// VirtualAlloc
-	buffer->bitmapMemory = mmap( 0,  // No specific start place for memory
-		width * height * buffer->bytesPerPixel, // how many bytes
-		PROT_READ | PROT_WRITE, // Protection flags to read/write
-		MAP_ANONYMOUS | MAP_PRIVATE, // not a file, only for us
-		-1, 						// no file
-		0); 				// offset into the file
-
-	if (buffer->bitmapMemory == MAP_FAILED)
+	if (getUseSDLTextureLock())
 	{
-		printf("Could not map memory for bitmap buffer\n");
+		// nop
 	}
-	#endif
+	else
+	{
+		// in linux we have mmap() which is similar to windows's 
+		// VirtualAlloc
+		buffer->bitmapMemory = mmap( 0,  // No specific start place for memory
+			width * height * buffer->bytesPerPixel, // how many bytes
+			PROT_READ | PROT_WRITE, // Protection flags to read/write
+			MAP_ANONYMOUS | MAP_PRIVATE, // not a file, only for us
+			-1, 						// no file
+			0); 				// offset into the file
 
+		if (buffer->bitmapMemory == MAP_FAILED)
+		{
+			printf("Could not map memory for bitmap buffer\n");
+		}
+	}
 }
 
 
@@ -1076,38 +1173,91 @@ void updateGame(WindowBuffer* windowBuffer, game_input_state& inputState, game_m
 	game_state* gameState = (game_state*)gameMemory.permanentStoragePointer;
 	if (!gameMemory.isInitialized)
 	{
-
+#if HANDMADE_INTERNAL
 		const char* fileName = __FILE__;
-
 		struct debug_read_file_result readResult = debugPlatformReadEntireFile(fileName);
 		if (readResult.memoryPointer)
 		{
 			debugPlatformWriteEntireFile("../data/test.out", readResult.sizeBytes,readResult.memoryPointer);
 			debugPlatformFreeFileMemory(readResult.memoryPointer);
 		}
+#endif
 
 		gameState->toneHz = 256;
 		gameMemory.isInitialized = true;
 	}
 
+	// Update graphics first and then sound.
 	
-	dualBuffer preparedBuffer = prepareSoundBuffer();
-	game_sound_buffer gameSoundBuffer;
+	// Graphics update
+
+		game_pixel_buffer gamePixelBuffer = preparePixelBuffer(windowBuffer);
+
+		// Game modifies the given buffers
+		gameUpdateAndRender(&gamePixelBuffer, &inputState, gameState);
+		
+	// Sound update
+		
+		uint64 audioWallClock = getWallClock();
+		real32 fromBeginToAudioSeconds  = getSecondsElapsed(audioConfig.flipWallClock, audioWallClock);
+
+		real32 secondsLeftUntilFlip = (audioConfig.targetSecondsPerFrame - fromBeginToAudioSeconds);
+		audioConfig.expectedBytesUntilFlip = (int32)((secondsLeftUntilFlip / audioConfig.targetSecondsPerFrame) * (real32)audioConfig.expectedSoundBytesPerFrame);
+		
+		// inspect audio latency
+		int playCursor = ringBuffer.playCursorBytes;
+		int writeCursor = ringBuffer.writeCursorBytes;
+		if (writeCursor < playCursor)
+		{
+			writeCursor += ringBuffer.sizeBytes;
+		}
+		
+		int bytesBetweenAudioCursors = writeCursor - playCursor;
+		real32 secondsBetweenCursors = ((real32)bytesBetweenAudioCursors / (real32)audioConfig.bytesPerSample) 
+			/ (real32)audioConfig.samplesPerSecond;
+			
+		audioConfig.currentLatencyBytes = bytesBetweenAudioCursors;
+		audioConfig.currentLatencySeconds = secondsBetweenCursors;
+		
+		printf("Delta: %d : %f\n", bytesBetweenAudioCursors, secondsBetweenCursors);
+		
+		// Find out whether audio card is latent. Used in prepareSoundBuffer
+		
+		audioConfig.expectedFrameBoundaryByte = playCursor + audioConfig.expectedBytesUntilFlip;
+		
+		// Normalize  
+		int safeWriteCursorByte = writeCursor;
+		if (safeWriteCursorByte < playCursor)
+		{
+			safeWriteCursorByte += ringBuffer.sizeBytes;
+		}
+		assert(safeWriteCursorByte >= playCursor);
+		
+		
+		audioConfig.audioCardIsLatent = true;
+		safeWriteCursorByte += audioConfig.safetyBytes;
+		if (safeWriteCursorByte < audioConfig.expectedFrameBoundaryByte)
+		{
+			audioConfig.audioCardIsLatent = false;
+		}
+		
+		dualBuffer preparedBuffer = prepareSoundBuffer();
+		game_sound_buffer gameSoundBuffer;
+		
+		gameSoundBuffer.samples = gameInputSoundData;
+		gameSoundBuffer.samplesToWrite = preparedBuffer.region1Samples 
+		+ preparedBuffer.region2Samples;
+		
+		if (gameSoundBuffer.samplesToWrite > 0)
+		{
+			memset(gameInputSoundData, 0, ringBuffer.sizeBytes);
+		}
+		
+		gameGetSoundSamples(&gameSoundBuffer);
+		
 	
-	gameSoundBuffer.samples = gameInputSoundData;
-	gameSoundBuffer.samplesToWrite = preparedBuffer.region1Samples 
-	+ preparedBuffer.region2Samples;
+	// Write output from game to buffers
 	
-	if (gameSoundBuffer.samplesToWrite > 0)
-	{
-		memset(gameInputSoundData, 0, ringBuffer.sizeBytes);
-	}
-
-	game_pixel_buffer gamePixelBuffer = preparePixelBuffer(windowBuffer);
-
-	// Game modifies the given buffers
-	gameUpdateAndRender(&gamePixelBuffer, &gameSoundBuffer, &inputState, gameState);
-
 	writeSoundBuffer(gameSoundBuffer, preparedBuffer);
 	renderPixelBuffer(windowBuffer);
 }
@@ -1119,15 +1269,18 @@ game_pixel_buffer preparePixelBuffer(WindowBuffer* buffer)
 	int32 result = 0;
 	int32 texturePitch = 0;
 
-	#if USE_TEXTURELOCK
-	result = SDL_LockTexture(buffer->texture,
-		NULL, // Replace all
-		&texturePixels,	
-		&texturePitch);
-	#else
-	texturePixels = buffer->bitmapMemory;
-	texturePitch = buffer->bitmapWidth * buffer->bytesPerPixel;
-	#endif
+	if (getUseSDLTextureLock())
+	{
+		result = SDL_LockTexture(buffer->texture,
+			NULL, // Replace all
+			&texturePixels,	
+			&texturePitch);
+	}
+	else
+	{
+		texturePixels = buffer->bitmapMemory;
+		texturePitch = buffer->bitmapWidth * buffer->bytesPerPixel;
+	}
 
 	if (result == 0)
 	{
@@ -1143,19 +1296,21 @@ game_pixel_buffer preparePixelBuffer(WindowBuffer* buffer)
 
 void renderPixelBuffer(WindowBuffer *buffer)
 {
-	#if USE_TEXTURELOCK	
+	if (getUseSDLTextureLock())
+	{
 		SDL_UnlockTexture(buffer->texture);
-	#else
-		
+	}
+	else
+	{
 		int32 result = SDL_UpdateTexture(buffer->texture,
 				NULL, 							// update whole texture, not a portion
-				texturePixels, 				// the memory where to get the texture
-				texturePitch); 	// pitch, how many bytes is one line
+				buffer->bitmapMemory, 				// the memory where to get the texture
+				buffer->bitmapWidth * buffer->bytesPerPixel); 	// pitch, how many bytes is one line
 		if (result != 0)
 		{
 			printf("error updating the texture: %s\n", SDL_GetError());
 		}
-	#endif
+	}
 }
 
 
@@ -1313,13 +1468,19 @@ internal void
 SDLDebugDrawVertical(game_pixel_buffer& buffer, int32 x, 
 	int32 top, int32 bottom, uint32 color)
 {
+	if (!( (x > 0 && x <= buffer.bitmapWidth)
+		&& (top > 0 && top < buffer.bitmapHeight)
+		&& (bottom > 0 && bottom < buffer.bitmapHeight)))
+	{
+		return;
+	}
 
 
 	uint8* pixel = (uint8*)buffer.texturePixels
 		+ x * buffer.bytesPerPixel 
 		+ top * buffer.texturePitch;
 
-	for(int y = 0;
+	for(int y = top;
 		y < bottom;
 		y++)
 		{
@@ -1328,40 +1489,83 @@ SDLDebugDrawVertical(game_pixel_buffer& buffer, int32 x,
 		}
 }
 
+void drawDebugCursor(uint32 cursor, game_pixel_buffer& writebuffer
+	, int32 padX, real32 c, int32 top, int32 bottom, uint32 color)
+{
+	int32 x = padX + (int32)(c * (real32)cursor);
+
+	SDLDebugDrawVertical(writebuffer, x, top, bottom, color);
+}
+
 void
-SDLDebugSyncDisplay(WindowBuffer* buffer, uint32 arrayCount, debugTimeMarker* markerArray, ringBufferInfo& ringBufferInfo, real32 targetSecondsPerFrame)
+SDLDebugSyncDisplay(WindowBuffer* buffer, uint32 arrayCount
+	, sdl_audio_debug_marker* markerArray, int currentMarkerIndex, ringBufferInfo& ringBufferInfo)
 {
 	game_pixel_buffer writebuffer = preparePixelBuffer(buffer);
 	
 	int32 padX = 16;
 	int32 padY = 16;
-	uint8 blue = (255);
-	uint8 green = (255);
 	
-	//uint32 color = ((green << 8) | blue);
+	int lineHeight = 64;
+	
 	uint32 whitecolor = 0xFFFFFFFF;
 	uint32 redcolor = 0xFFFF0000;
-	uint32 color = whitecolor;
-
-	int32 top = padY; 
-	int32 bottom = buffer->bitmapHeight - padY;
+	uint32 yellowColor = 0xFFFFFF00;
+	
 	real32 c = (real32)(buffer->bitmapWidth - 2 * padX)/ (real32)ringBufferInfo.sizeBytes;
-	for (uint32 playCursorIndex = 0;
-		playCursorIndex < arrayCount;
-		playCursorIndex++)
+	for (uint32 markerIndex = 0;
+		markerIndex < arrayCount;
+		markerIndex++)
 		{
-			uint32 playCursor = markerArray[playCursorIndex].playCursorBytes;
-			uint32 writeCursor = markerArray[playCursorIndex].writeCursorBytes;
+			int32 top = padY; 
+			int32 bottom =  padY + lineHeight;
 			
-			hm_assert(playCursor < ringBufferInfo.sizeBytes);
+			sdl_audio_debug_marker& marker = markerArray[markerIndex];
 			
-			int32 x = padX + (int32)(c * (real32)playCursor);
-			color = whitecolor;
-			SDLDebugDrawVertical(writebuffer, x, top, bottom, color);
+			if (markerIndex == (uint32)currentMarkerIndex)
+			{
+				uint32 outputPlay = marker.outputPlayCursor;
+				uint32 outputWrite = marker.outputWriteCursor;
+				
+				top += lineHeight;
+				bottom += lineHeight;
+				
+				drawDebugCursor(outputWrite, writebuffer
+					, padX, c, top, bottom, redcolor);
+				drawDebugCursor(outputPlay, writebuffer
+					, padX, c, top, bottom, whitecolor);
+				
+				uint32 flipCursor = marker.flipCursor;
+				drawDebugCursor(flipCursor, writebuffer
+					, padX, c, top, bottom, yellowColor);
+				
+				
+				uint32 outputLocation = marker.outputLocation;
+				uint32 outputBytes = marker.outputLocation + marker.outputByteCount;
+				
+				
+				top += lineHeight;
+				bottom += lineHeight;
+				
+				drawDebugCursor(outputLocation, writebuffer
+					, padX, c, top, bottom, whitecolor);
+				drawDebugCursor(outputBytes, writebuffer
+					, padX, c, top, bottom, redcolor);
+				
+				
+				
+				top += lineHeight;
+				bottom += lineHeight;
+			}
 			
-			x = padX + (int32)(c * (real32)writeCursor);
-			color = redcolor;
-			SDLDebugDrawVertical(writebuffer, x, top, bottom, color);
+			uint32 playCursor = marker.flipPlayCursor;
+			uint32 writeCursor = marker.flipWriteCursor;
+			
+			drawDebugCursor(writeCursor, writebuffer
+				, padX, c, top, bottom, redcolor);
+			drawDebugCursor(playCursor, writebuffer
+				, padX, c, top, bottom, whitecolor);
+			
 		}
 		
 	renderPixelBuffer(buffer);
