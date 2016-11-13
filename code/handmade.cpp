@@ -1,11 +1,11 @@
 /* Cross platform code */
 #include "handmade.h"
 
-global_variable game_audioConfig audioConfig;
+
 
 #include <cstring>
 
-void gameUpdateAndRender(game_pixel_buffer* pixelBuffer, game_input_state* inputState, game_state* gameState)
+GAME_UPDATE_AND_RENDER(gameUpdateAndRender)
 {
 
 	// Check controller validity
@@ -32,7 +32,7 @@ void gameUpdateAndRender(game_pixel_buffer* pixelBuffer, game_input_state* input
 	renderBlackScreen(pixelBuffer);
 }
 
-void gameGetSoundSamples(game_sound_buffer* buffer)
+GAME_GET_SOUND_SAMPLES(gameGetSoundSamples)
 {
 	gameOutputSound(buffer);
 }
@@ -43,17 +43,24 @@ void gameOutputSound(game_sound_buffer* buffer)
 {
 	if (buffer->samplesToWrite > 0)
 	{
-		writeSineWave(buffer->samples, buffer->samplesToWrite);
+		writeSineWave(buffer);
 	}
 }
 
-void writeSineWave(void* samples, uint32 samplesToWrite)
+void writeSineWave(game_sound_buffer* buffer)
 {
+	
+	void *samples = buffer->samples;
+	uint32 samplesToWrite = buffer->samplesToWrite;
+	
 	uint32 sampleCount = samplesToWrite;
+	int16 toneVolume = 3000;
 	
 	int16* sampleOut = (int16*)samples;
 	real32 sampleValue = 0.0f;
-	int32 runningSampleIndex = audioConfig.runningSampleIndex;
+	int32 runningSampleIndex = buffer->runningSampleIndex;
+	
+	real32 sineWavePeriod = 2.0f * PI32;
 	
 	for (uint32 sampleIndex = 0;
 			sampleIndex < sampleCount;
@@ -68,9 +75,9 @@ void writeSineWave(void* samples, uint32 samplesToWrite)
 				// sin works with multiples of 2PI, the number does not matter otherwise.
 				// t *= 2.0f * PI32;
 				// sinf() returns[ -1.0f, 1.0f]
-				real32 sineValue = sinf(audioConfig.tForSine);
+				real32 sineValue = sinf(buffer->tForSine);
 				
-				sampleValue = (int16)(sineValue * audioConfig.toneVolume);
+				sampleValue = (int16)(sineValue * toneVolume);
 				*sampleOut = sampleValue;
 				sampleOut++;
 				*sampleOut = sampleValue;
@@ -78,15 +85,15 @@ void writeSineWave(void* samples, uint32 samplesToWrite)
 				
 				runningSampleIndex++;
 				// Advance t for sine by one sample
-				audioConfig.tForSine += (audioConfig.sineWavePeriod) / (real32)(audioConfig.samplesPerWavePeriod);
+				buffer->tForSine += (sineWavePeriod) / (real32)(buffer->samplesPerWavePeriod);
 				
-				if (audioConfig.tForSine > audioConfig.sineWavePeriod)
+				if (buffer->tForSine > sineWavePeriod)
 				{
-						audioConfig.tForSine -= audioConfig.sineWavePeriod;
+						buffer->tForSine -= sineWavePeriod;
 				}
 			}
 		
-	audioConfig.runningSampleIndex = runningSampleIndex;
+	buffer->runningSampleIndex = runningSampleIndex;
 
 }
 

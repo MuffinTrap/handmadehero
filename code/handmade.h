@@ -3,6 +3,37 @@
 #ifndef HANDMADE_H
 #define HANDMADE_H
 
+
+#include <math.h> // sin(), make your own laters.
+#include <stdint.h>
+#include <string.h> // memcpy and NULL
+#include <cstdio> // printf
+
+// Type defines
+typedef int8_t int8;
+typedef int16_t int16;
+typedef int32_t int32;
+typedef int64_t int64;
+
+typedef uint8_t uint8;
+typedef uint16_t uint16;
+typedef uint32_t uint32;
+typedef uint64_t uint64;
+
+typedef float real32;
+typedef double real64;
+
+typedef int32 bool32;
+
+static const real32 PI32 = 3.14159265359f;
+
+// static functions are local to the file
+// so we call them internal
+
+#define internal static 
+#define global_variable static
+#define local_persist static
+
 // Macros
 #define bitsPerKilo 1024LL
 #define SizeKiloBytes(value) ((value) * bitsPerKilo)
@@ -44,9 +75,26 @@ struct debug_read_file_result
 	}
 };
 
-internal debug_read_file_result debugPlatformReadEntireFile(const char* filename);
-internal void debugPlatformFreeFileMemory(void* bitmapMemory);
-internal bool32 debugPlatformWriteEntireFile(const char* filename, uint32 memorySize, void* memory);
+// Debug functions whose implementation differs by platform
+// Pointers to implementation are given in game_memory struct
+
+#define DEBUG_PLATFORM_FREE_FILE_MEMORY(name) void name(void *memory)
+typedef DEBUG_PLATFORM_FREE_FILE_MEMORY(debug_platform_free_file_memory);
+DEBUG_PLATFORM_FREE_FILE_MEMORY(debugPlatformFreeFileMemory);
+
+// void debugPlatformFreeFileMemory(void* bitmapMemory);
+
+#define DEBUG_PLATFORM_READ_ENTIRE_FILE(name) debug_read_file_result name(const char *filename)
+typedef DEBUG_PLATFORM_READ_ENTIRE_FILE(debug_platform_read_entire_file);
+DEBUG_PLATFORM_READ_ENTIRE_FILE(debugPlatformReadEntireFile);
+// debug_read_file_result debugPlatformReadEntireFile(const char* filename);
+
+#define DEBUG_PLATFORM_WRITE_ENTIRE_FILE(name) bool32 name(const char* filename, uint32 memorySize, void* memory)
+typedef DEBUG_PLATFORM_WRITE_ENTIRE_FILE(debug_platform_write_entire_file);
+DEBUG_PLATFORM_WRITE_ENTIRE_FILE(debugPlatformWriteEntireFile);
+
+// bool32 debugPlatformWriteEntireFile(const char* filename, uint32 memorySize, void* memory);
+
 #endif
 
 internal uint32 
@@ -75,6 +123,13 @@ struct game_memory
 		transientStorageSize = 0;
 		transientStoragePointer = NULL;
 	}
+	
+	#if HANDMADE_INTERNAL
+	debug_platform_free_file_memory *debug_free_memory;
+	debug_platform_read_entire_file *debug_read_file;
+	debug_platform_write_entire_file *debug_write_file;
+	#endif
+	
 };
 
 struct game_state
@@ -82,6 +137,7 @@ struct game_state
 	int32 toneHz;
 	int32 xOffset;
 	int32 yOffset;
+	real32 tSine;
 };
 /*
 	Services that the game provides to the platform layer
@@ -155,6 +211,11 @@ struct game_sound_buffer
 		samples = NULL;
 		samplesToWrite = 0;
 	}
+	
+	// For sine wave output, copied from audioConfig
+	uint32 runningSampleIndex;
+	real32 tForSine;
+	int32 samplesPerWavePeriod;
 };
 
 
@@ -231,24 +292,55 @@ struct game_input_state
 };
 
 // Used by platform 
-internal void 
-gameUpdateAndRender(game_pixel_buffer* pixelBuffer, game_input_state* inputState, game_state* gameState);
+
+// Function pointers for when functions are loaded from shared library or dynamic
+// library
+// These need to be declared to extern "C" functions so that 
+// C++ name mangling does not change the names and we can load them from the 
+// shared library object.
+
+#define GAME_UPDATE_AND_RENDER(name) void name(game_memory *memory, game_pixel_buffer* pixelBuffer, game_input_state* inputState, game_state* gameState)
+typedef GAME_UPDATE_AND_RENDER(game_update_and_render);
+extern "C"
+{
+	extern GAME_UPDATE_AND_RENDER(gameUpdateAndRenderStub)
+	{
+		// nop
+	}
+	extern GAME_UPDATE_AND_RENDER(gameUpdateAndRender);
+}
 
 // This needs to be fast, about a millisecond to keep sound in sync
-internal void
-gameGetSoundSamples(game_sound_buffer* buffer);
+
+#define GAME_GET_SOUND_SAMPLES(name) void name(game_memory *memory, game_sound_buffer* buffer)
+typedef GAME_GET_SOUND_SAMPLES(game_get_sound_samples);
+
+extern "C"
+{
+	extern GAME_GET_SOUND_SAMPLES(gameGetSoundSamplesStub)
+	{
+		// nop
+	}
+
+	extern GAME_GET_SOUND_SAMPLES(gameGetSoundSamples);
+}
+//void
+//gameGetSoundSamples(game_sound_buffer* buffer);
 
 // Internal use
-internal void 
+void 
 gameOutputSound(game_sound_buffer* buffer);
 
-internal void 
-writeSineWave(void* samples, uint32 sampleCountToWrite);
+void 
+writeSineWave(game_sound_buffer* buffer);
 
-internal void 
+void 
 renderWeirdGradient(game_pixel_buffer* buffer, int32 xOffset, int32 yOffset);
 
-internal void
+void
 renderBlackScreen(game_pixel_buffer* buffer);
+
+
+
 
 #endif 

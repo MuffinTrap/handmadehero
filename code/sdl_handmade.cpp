@@ -1,54 +1,31 @@
 // ** GLOBAL **
 
-#include <stdint.h>
-typedef int8_t int8;
-typedef int16_t int16;
-typedef int32_t int32;
-typedef int64_t int64;
 
-typedef uint8_t uint8;
-typedef uint16_t uint16;
-typedef uint32_t uint32;
-typedef uint64_t uint64;
-
-typedef float real32;
-typedef double real64;
-
-typedef int32 bool32;
-// static functions are local to the file
-// so we call them internal
-
-#define internal static 
-#define global_variable static
-#define local_persist static
-
-static const real32 PI32 = 3.14159265359f;
-
-#include <string.h> // memcpy and NULL
 #include <cstdio> // printf
 #include <assert.h>
-#include <math.h> // sin(), make your own laters.
-
 
 // ** Cross platform API **
 
-// Cross platform code include
-// needs the definitions above
-#include "handmade.cpp"
 // And code below needs the definitions in handmade.h
 
 // ** SDL and Linux specific includes
-#include <SDL.h>	
+
 #include <sys/mman.h>
+
+#include <dlfcn.h> // Load shared library, dlopen
 
 #include "immintrin.h" // Cpu cycle counter, official place
 #include "x86intrin.h" // GCC place for cycle counter
 
+#include "handmade.h"
 #include "sdl_handmade.h"
 
+global_variable game_audioConfig audioConfig;
+
+
 // static variables are initialized to 0
-global_variable bool running;
-global_variable bool globalPause;
+global_variable bool32 running;
+global_variable bool32 globalPause;
 
 
 // ** RENDERING **
@@ -61,11 +38,7 @@ static bool getUseSDLTextureLock()
 	return true;
 }
 
-
-
 global_variable WindowBuffer *gWindowBuffer;
-
-
 
 internal void handleWindowResizeEvent(SDL_Event* event);
 internal void sdlResizeWindowTexture(WindowBuffer *buffer, SDL_Renderer *renderer, int32 width, int32 height);
@@ -178,6 +151,10 @@ internal void handleKey(SDL_Keycode, bool wasDown);
 
 internal void updateGame(WindowBuffer* windowBuffer, game_input_state& inputState, game_memory& gameMemory);
 
+// ** Loading game code from a shader library
+//internal void sld_loadGameCode(void);
+
+
 // ** TIME
 internal int32 SDLGetWindowRefreshRate(SDL_Window* window);
 inline uint64 getWallClock();
@@ -190,6 +167,89 @@ internal void
 SDLDebugSyncDisplay(WindowBuffer* buffer, uint32 arrayCount
 	, sdl_audio_debug_marker* timeMarkers, int currentMarkerIndex, ringBufferInfo& ringBufferInfo);
 
+
+struct sdl_game_code
+{
+	void* libraryHandle;
+	game_update_and_render *updateAndRender;
+	game_get_sound_samples *getSoundSamples;
+	
+	bool32 isValid;
+};
+
+internal sdl_game_code gameCodeHandles;
+
+internal sdl_game_code sdl_loadGameCode(void)
+{
+	sdl_game_code result = {};
+	result.isValid = false;
+	
+	result.libraryHandle = dlopen("./libhandmade.so", RTLD_NOW);
+	if (result.libraryHandle != NULL)
+	{
+		// dlsym() returns NULL if function is not found from library
+		
+		dlerror(); // resets error
+		result.updateAndRender = (game_update_and_render*)
+			dlsym(result.libraryHandle, "gameUpdateAndRender");
+			
+		const char *errorMsg = dlerror();
+		if (errorMsg != NULL)
+		{
+			printf("Error loading update and render function, %s\n", errorMsg);
+			result.updateAndRender = NULL;
+
+		}
+		
+		dlerror();
+		result.getSoundSamples = (game_get_sound_samples*)
+			dlsym(result.libraryHandle, "gameGetSoundSamples");
+			
+		errorMsg = dlerror();
+		if (errorMsg != NULL)
+		{
+			printf("Error loading sound sample function, %s\n", errorMsg);
+			result.getSoundSamples = NULL;
+		}
+		
+		if (result.getSoundSamples && result.updateAndRender)
+		{
+			result.isValid = true;
+		}
+		else
+		{
+			dlclose(result.libraryHandle);
+		}
+	}
+	else
+	{
+		printf("Error loading game code library: %s\n", dlerror());
+	}
+	
+	if (!result.isValid)
+	{
+		result.updateAndRender = gameUpdateAndRenderStub;
+		result.getSoundSamples = gameGetSoundSamplesStub;
+	}	
+
+	return result;
+}
+
+internal void
+sdl_unloadGameCode(sdl_game_code *gameCode)
+{
+	if (gameCode->libraryHandle != NULL)
+	{
+		dlclose(gameCode->libraryHandle);
+		gameCode->libraryHandle = NULL;
+	}
+	gameCode->isValid = false;
+	{
+		gameCode->updateAndRender = gameUpdateAndRenderStub;
+		gameCode->getSoundSamples = gameGetSoundSamplesStub;
+	}
+}
+
 // ** SDL CODE
 
 int main(int argc, char *argv[])
@@ -199,6 +259,8 @@ int main(int argc, char *argv[])
 	{
 		printf("Argument %d: %s\n", i, argv[i]);
 	}
+	
+	
 	
 	if (SDL_Init(SDL_INIT_VIDEO | 
 		SDL_INIT_GAMECONTROLLER | 
@@ -273,6 +335,8 @@ int main(int argc, char *argv[])
 	game_input_state* pOldInput = &input1;
 	game_input_state* pNewInput = &input2;
 
+	// Allocate game memory
+	
 #if HANDMADE_INTERNAL 
 	void* baseAddress = (void*)SizeTeraBytes(2);
 #else
@@ -299,12 +363,29 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 	
+	#if HANDMADE_INTERNAL
+	gameMemory.debug_free_memory = debugPlatformFreeFileMemory;
+	gameMemory.debug_read_file = debugPlatformReadEntireFile;
+	gameMemory.debug_write_file = debugPlatformWriteEntireFile;
+	#endif
+	
 	sdl_audio_debug_marker timeMarkers[gameUpdateHz / 2];
 	timeMarkersPointer = timeMarkers;
 
+	// Load game code
+	gameCodeHandles = sdl_loadGameCode();
+	int loadCounter = 0;
 
 	while(running)
 	{
+		if (loadCounter++ > 120)
+		{
+			sdl_unloadGameCode(gameCodeHandles);
+			gameCodeHandles = sdl_loadGameCode();
+			loadCounter = 0;
+		}
+	
+		
 		game_input_state& oldInput = *pOldInput;
 		game_input_state& newInput = *pNewInput;
 
@@ -421,6 +502,7 @@ int main(int argc, char *argv[])
 			timeMarkerIndex = 0;
 		}
 
+		sdl_unloadGameCode(&gameCodeHandles);
 #endif
 	}
 	closeControllers();
@@ -1175,11 +1257,11 @@ void updateGame(WindowBuffer* windowBuffer, game_input_state& inputState, game_m
 	{
 #if HANDMADE_INTERNAL
 		const char* fileName = __FILE__;
-		struct debug_read_file_result readResult = debugPlatformReadEntireFile(fileName);
+		struct debug_read_file_result readResult = gameMemory.debug_read_file(fileName);
 		if (readResult.memoryPointer)
 		{
-			debugPlatformWriteEntireFile("../data/test.out", readResult.sizeBytes,readResult.memoryPointer);
-			debugPlatformFreeFileMemory(readResult.memoryPointer);
+			gameMemory.debug_write_file("../data/test.out", readResult.sizeBytes,readResult.memoryPointer);
+			gameMemory.debug_free_memory(readResult.memoryPointer);
 		}
 #endif
 
@@ -1194,7 +1276,7 @@ void updateGame(WindowBuffer* windowBuffer, game_input_state& inputState, game_m
 		game_pixel_buffer gamePixelBuffer = preparePixelBuffer(windowBuffer);
 
 		// Game modifies the given buffers
-		gameUpdateAndRender(&gamePixelBuffer, &inputState, gameState);
+		gameCodeHandles.updateAndRender(&gameMemory, &gamePixelBuffer, &inputState, gameState);
 		
 	// Sound update
 		
@@ -1253,7 +1335,14 @@ void updateGame(WindowBuffer* windowBuffer, game_input_state& inputState, game_m
 			memset(gameInputSoundData, 0, ringBuffer.sizeBytes);
 		}
 		
-		gameGetSoundSamples(&gameSoundBuffer);
+		
+		gameSoundBuffer.tForSine = audioConfig.tForSine;
+		gameSoundBuffer.runningSampleIndex = audioConfig.runningSampleIndex;
+		gameSoundBuffer.samplesPerWavePeriod = audioConfig.samplesPerWavePeriod;
+		
+		gameCodeHandles.getSoundSamples(&gameMemory, &gameSoundBuffer);
+		audioConfig.tForSine = gameSoundBuffer.tForSine;
+		audioConfig.runningSampleIndex = gameSoundBuffer.runningSampleIndex;
 		
 	
 	// Write output from game to buffers
@@ -1367,10 +1456,22 @@ SDL_Renderer* getRenderer(uint32 windowID)
 	return NULL;
 }
 
+// ////////
+// DEBUG FUNCTIONS
+// ///////////
+
 #if HANDMADE_INTERNAL
 
-internal debug_read_file_result
-debugPlatformReadEntireFile(const char* filename)
+DEBUG_PLATFORM_FREE_FILE_MEMORY(debugPlatformFreeFileMemory)
+{
+	if (memory != NULL)
+	{
+		free(memory);
+		memory = NULL;
+	}
+}
+
+DEBUG_PLATFORM_READ_ENTIRE_FILE(debugPlatformReadEntireFile)
 {
 	struct debug_read_file_result result;
 	//when reading binary file, use O_BINARY
@@ -1406,8 +1507,8 @@ debugPlatformReadEntireFile(const char* filename)
 		int32 bytesRead = read(fileDescriptor, nextBytePointer, bytesLeftToRead);
 		if (bytesRead == -1)
 		{
-			debugPlatformFreeFileMemory(fileContentsBuffer);
 			close(fileDescriptor);
+			debugPlatformFreeFileMemory(fileContentsBuffer);
 			return result;
 		}
 
@@ -1422,15 +1523,7 @@ debugPlatformReadEntireFile(const char* filename)
 	return result;
 }
 
-internal void debugPlatformFreeFileMemory(void* memory)
-{
-	if (memory != NULL)
-	{
-		free(memory);
-		memory = NULL;
-	}
-}
-internal bool32 debugPlatformWriteEntireFile(const char* filename, uint32 memorySize, void* memory)
+DEBUG_PLATFORM_WRITE_ENTIRE_FILE(debugPlatformWriteEntireFile)
 {
 	// open for writing and create if does not exist
 	// permissions to use when created.

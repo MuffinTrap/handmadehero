@@ -1,4 +1,7 @@
+#ifndef SDL_HANDMADE_H
+#define SDL_HANDMADE_H
 
+#include <SDL.h>
 
 struct WindowBuffer
 {
@@ -38,3 +41,6 @@ struct sdl_audio_debug_marker
 		flipCursor = 0;
 	}
 };
+
+
+#endif
