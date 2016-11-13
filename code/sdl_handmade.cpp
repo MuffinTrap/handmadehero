@@ -380,7 +380,7 @@ int main(int argc, char *argv[])
 	{
 		if (loadCounter++ > 120)
 		{
-			sdl_unloadGameCode(gameCodeHandles);
+			sdl_unloadGameCode(&gameCodeHandles);
 			gameCodeHandles = sdl_loadGameCode();
 			loadCounter = 0;
 		}
